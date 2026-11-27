@@ -1,6 +1,7 @@
 package com.jungleclash.game;
 
 import com.jungleclash.game.engine.Cards;
+import com.jungleclash.game.engine.DuelGame;
 import com.jungleclash.game.engine.GameEngine;
 
 import org.json.JSONArray;
@@ -27,10 +28,14 @@ public class HostController {
 
     private final Sender sender;
     private GameEngine engine = new GameEngine(new Random());
-    private String phase = "lobby"; // lobby, pre, decide, post, result, over
+    private String phase = "lobby"; // lobby, choose, pre, decide, post, result, over
     private final Map<String, String> pending = new LinkedHashMap<>();
     private final Map<String, List<String>> notes = new HashMap<>();
     private final List<String> preSteps = new ArrayList<>();
+    private String mode = "normal";          // normal | duel
+    private DuelGame duel;
+    private final Map<String, Integer> roomCrowns = new HashMap<>(); // games won in this room
+    private final Map<String, String> requests = new LinkedHashMap<>(); // join requests waiting for the host
 
     public HostController(Sender sender) { this.sender = sender; }
 
@@ -41,6 +46,20 @@ public class HostController {
     public int playerCount() { return engine.players.size(); }
 
     // ---------------------------------------------------------------- lobby
+
+    // ---------------------------------------------------------------- join requests
+
+    /** A phone asked to join. Returns false if it must be refused right away. */
+    public boolean addRequest(String id, String name) {
+        if (!acceptsPlayers() || engine.players.size() + requests.size() >= MAX_PLAYERS + 2) return false;
+        requests.put(id, name == null || name.trim().isEmpty() ? "لاعب" : name.trim());
+        broadcast();
+        return true;
+    }
+
+    public void removeRequest(String id) {
+        if (requests.remove(id) != null) broadcast();
+    }
 
     public void onHello(String id, String name) {
         if (!acceptsPlayers() || engine.byId(id) != null) return;
@@ -58,24 +77,104 @@ public class HostController {
         } else {
             // Play the absent player safely: hide, no vote, skip abilities.
             String kind = pending.get(id);
-            if (kind != null) applyDefault(id, kind);
+            if (kind != null && mode.equals("duel")) autoDuel(id);
+            else if (kind != null) applyDefault(id, kind);
         }
         broadcast();
     }
 
-    public void startGame() {
+    public void startGame(String wanted) {
         if (!phase.equals("lobby") || engine.players.size() < 2) return;
-        newRound();
+        beginGame(wanted);
+    }
+
+    private void beginGame(String wanted) {
+        mode = "duel".equals(wanted) && engine.players.size() == 2 ? "duel" : "normal";
+        if (mode.equals("duel")) {
+            GameEngine.Player a = engine.players.get(0), b = engine.players.get(1);
+            duel = new DuelGame(new Random(), a.id, a.name, b.id, b.name);
+            newDuelRound();
+        } else {
+            duel = null;
+            newRound();
+        }
     }
 
     public void nextRound() {
-        if (phase.equals("result")) newRound();
-        else if (phase.equals("over")) {
-            List<GameEngine.Player> old = new ArrayList<>(engine.players);
-            engine = new GameEngine(new Random());
-            for (GameEngine.Player p : old) engine.addPlayer(p.id, p.name);
-            newRound();
+        if (!phase.equals("result")) return;
+        if (mode.equals("duel")) newDuelRound(); else newRound();
+    }
+
+    /** After a game ends: start a new game with the same players. */
+    public void newGame(String wanted) {
+        if (!phase.equals("over")) return;
+        List<GameEngine.Player> old = new ArrayList<>(engine.players);
+        engine = new GameEngine(new Random());
+        for (GameEngine.Player p : old) if (!p.id.startsWith("gone:")) engine.addPlayer(p.id, p.name);
+        if (engine.players.size() < 2) { phase = "lobby"; broadcast(); return; }
+        beginGame(wanted);
+    }
+
+    private void addRoomCrown(String id) {
+        Integer n = roomCrowns.get(id);
+        roomCrowns.put(id, n == null ? 1 : n + 1);
+    }
+
+    // ---------------------------------------------------------------- duel mode
+
+    private void newDuelRound() {
+        duel.startRound();
+        notes.clear();
+        pending.clear();
+        phase = "draft";
+        pending.put(duel.sides[duel.drafter()].id, "draft");
+        broadcast();
+    }
+
+    /** Host taps to reveal the next duel. */
+    public void revealNextDuel() {
+        if (!phase.equals("duel") || duel.allRevealed()) return;
+        duel.revealNext();
+        if (duel.allRevealed()) {
+            if (duel.winner != null) {
+                phase = "over";
+                addRoomCrown(duel.winner.id);
+            } else phase = "result";
         }
+        broadcast();
+    }
+
+    private void onDuelChoice(String id, String kind, String value) {
+        int i = duel.indexOf(id);
+        if (i < 0 || value == null) return;
+        switch (kind) {
+            case "draft":
+                if (!duel.draft(i, value)) return;
+                pending.remove(id);
+                if (duel.drafting()) pending.put(duel.sides[duel.drafter()].id, "draft");
+                else {
+                    phase = "arrange";
+                    for (DuelGame.Side sd : duel.sides) pending.put(sd.id, "place");
+                }
+                break;
+            case "place":
+                if (!duel.place(i, value)) return;
+                if (duel.sides[i].order.size() >= 3) pending.put(id, "strike");
+                break;
+            case "strike":
+                int idx;
+                try { idx = Integer.parseInt(value); } catch (NumberFormatException e) { return; }
+                if (!duel.setStrike(i, idx)) return;
+                pending.remove(id);
+                break;
+            default:
+                return;
+        }
+        if (phase.equals("arrange") && duel.ready()) {
+            pending.clear();
+            phase = "duel";
+        }
+        broadcast();
     }
 
     // ---------------------------------------------------------------- rounds
@@ -87,8 +186,15 @@ public class HostController {
         preSteps.clear();
         preSteps.add("giraffe");
         preSteps.add("fox");
+        phase = "choose";
+        for (GameEngine.Player p : engine.alive()) pending.put(p.id, "pick");
+        broadcast();
+    }
+
+    private void startPre() {
+        engine.afterPicks();
         if ("migration".equals(engine.event.key)) {
-            for (GameEngine.Player p : engine.alive()) note(p.id, "الهجرة: انتقل إليك حيوان جارك.");
+            for (GameEngine.Player p : engine.alive()) note(p.id, "الهجرة: انتقل إليك حيوان جارك، وهو الآن: " + p.animal.name + ".");
         }
         phase = "pre";
         advancePre();
@@ -128,6 +234,7 @@ public class HostController {
     private void resolve() {
         engine.resolveRound();
         phase = engine.isOver() ? "over" : "result";
+        if (engine.isOver()) addRoomCrown(engine.winner.id);
         broadcast();
     }
 
@@ -141,9 +248,13 @@ public class HostController {
 
     public void onChoice(String id, String kind, String value) {
         if (!kind.equals(pending.get(id))) return;
+        if (mode.equals("duel")) { onDuelChoice(id, kind, value); return; }
         GameEngine.Player me = engine.byId(id);
         GameEngine.Player target = value == null ? null : engine.byId(value);
         switch (kind) {
+            case "pick":
+                if (!engine.pick(me, value)) return;
+                break;
             case "giraffe":
                 if (target == null || target == me || !target.alive) return;
                 note(id, "العين العالية: " + target.name + " لديه " + target.animal.name + " (" + target.animal.power + ").");
@@ -155,15 +266,14 @@ public class HostController {
                 note(target.id, "الثعلب أخذ حيوانك! حيوانك الآن: " + target.animal.name + ".");
                 break;
             case "decision":
-                if (!GameEngine.ATTACK.equals(value) && !GameEngine.HIDE.equals(value)) return;
-                me.decision = value;
+                if (!applyDecision(me, value)) return;
                 break;
             case "vote":
                 if (target == null || !target.alive) return;
                 me.voteFor = target.id;
                 break;
             case "cheetah":
-                if ("switch".equals(value)) me.decision = GameEngine.ATTACK.equals(me.decision) ? GameEngine.HIDE : GameEngine.ATTACK;
+                if (!"keep".equals(value) && !applyDecision(me, value)) return;
                 break;
             case "zebra":
                 if (target == null || !target.alive || !target.animal.predator) return;
@@ -176,9 +286,43 @@ public class HostController {
         afterChoice();
     }
 
+    /** Plays the remaining duel choices for a player who left. */
+    private void autoDuel(String id) {
+        int i = duel.indexOf(id);
+        for (int guard = 0; guard < 12 && pending.containsKey(id); guard++) {
+            String k = pending.get(id);
+            String v = k.equals("draft") ? duel.market.get(0).key
+                     : k.equals("place") ? firstUnplaced(duel.sides[i]) : "0";
+            onDuelChoice(id, k, v);
+        }
+    }
+
+    private String firstUnplaced(DuelGame.Side s) {
+        for (Cards.Animal a : s.hand) if (!s.order.contains(a)) return a.key;
+        return "";
+    }
+
+    /** value is "hide" or "attack:<playerId>". */
+    private boolean applyDecision(GameEngine.Player me, String value) {
+        if (GameEngine.HIDE.equals(value)) {
+            me.decision = GameEngine.HIDE;
+            me.attackTarget = null;
+            return true;
+        }
+        if (value != null && value.startsWith("attack:")) {
+            GameEngine.Player t = engine.byId(value.substring(7));
+            if (t == null || t == me || !t.alive) return false;
+            me.decision = GameEngine.ATTACK;
+            me.attackTarget = t.id;
+            return true;
+        }
+        return false;
+    }
+
     private void applyDefault(String id, String kind) {
         GameEngine.Player me = engine.byId(id);
         if (kind.equals("decision")) me.decision = GameEngine.HIDE;
+        if (kind.equals("pick") && me.animal == null && !me.hand.isEmpty()) me.animal = me.hand.get(0);
         pending.remove(id);
         afterChoice();
     }
@@ -186,6 +330,7 @@ public class HostController {
     private void afterChoice() {
         if (!pending.isEmpty()) { broadcast(); return; }
         switch (phase) {
+            case "choose": startPre(); break;
             case "pre": advancePre(); break;
             case "decide": startPost(); break;
             case "post": resolve(); break;
@@ -246,10 +391,21 @@ public class HostController {
             o.put("crowns", p.crowns);
             o.put("you", p.id.equals(id));
             o.put("waiting", pending.containsKey(p.id));
+            Integer rc = roomCrowns.get(p.id);
+            o.put("roomCrowns", rc == null ? 0 : rc);
+            if (duel != null && duel.indexOf(p.id) >= 0) o.put("crowns", duel.sides[duel.indexOf(p.id)].crowns);
             ps.put(o);
         }
         v.put("players", ps);
+        v.put("mode", mode);
+        if (LOCAL_ID.equals(id) && phase.equals("lobby")) {
+            JSONArray rq = new JSONArray();
+            for (Map.Entry<String, String> e : requests.entrySet()) rq.put(option(e.getKey(), e.getValue()));
+            v.put("requests", rq);
+        }
+        v.put("canDuel", engine.players.size() == 2);
         if (phase.equals("lobby") || me == null) return v;
+        if (mode.equals("duel")) return duelView(v, id);
 
         v.put("envName", engine.env.name);
         v.put("envText", engine.env.text);
@@ -257,7 +413,17 @@ public class HostController {
         v.put("eventText", engine.event.text);
         v.put("alive", me.alive);
         if (me.alive && me.animal != null) v.put("animal", animalJson(me.animal));
-        if (me.alive) v.put("decision", me.decision);
+        if (me.alive) {
+            String dec = GameEngine.HIDE.equals(me.decision) ? "hide" : "attack";
+            v.put("decision", dec);
+            GameEngine.Player t = me.attackTarget == null ? null : engine.byId(me.attackTarget);
+            v.put("decisionText", GameEngine.HIDE.equals(me.decision) ? "اختباء" : "هجوم على " + (t == null ? "" : t.name));
+            if (phase.equals("choose")) {
+                JSONArray hand = new JSONArray();
+                for (Cards.Animal a : me.hand) hand.put(animalJson(a));
+                v.put("hand", hand);
+            }
+        }
 
         JSONArray ns = new JSONArray();
         List<String> mine = notes.get(id);
@@ -271,6 +437,10 @@ public class HostController {
             JSONArray opts = new JSONArray();
             String title;
             switch (kind) {
+                case "pick":
+                    title = "اختر حيوانك لهذه الجولة";
+                    for (Cards.Animal a : me.hand) opts.put(option(a.key, "أختار " + a.name + " (" + a.power + ")"));
+                    break;
                 case "giraffe":
                     title = "العين العالية: اختر لاعباً لترى حيوانه";
                     for (GameEngine.Player p : engine.alive()) if (p != me) opts.put(option(p.id, p.name));
@@ -280,8 +450,8 @@ public class HostController {
                     for (GameEngine.Player p : engine.alive()) if (p != me) opts.put(option(p.id, p.name));
                     break;
                 case "decision":
-                    title = "اختر قرارك سراً";
-                    opts.put(option(GameEngine.ATTACK, "هجوم: +5 إن كنت الأعلى، وإلا −3"));
+                    title = "اختر قرارك سراً: هجوم على لاعب (+5 إن تفوّقت عليه، وإلا −3) أو اختباء";
+                    for (GameEngine.Player p : engine.alive()) if (p != me) opts.put(option("attack:" + p.id, "هجوم على " + p.name));
                     opts.put(option(GameEngine.HIDE, "اختباء: تتجاهل الخصومات وتخسر مكافأتي الصيد والقطيع"));
                     break;
                 case "vote":
@@ -289,11 +459,10 @@ public class HostController {
                     for (GameEngine.Player p : engine.alive()) opts.put(option(p.id, p.name));
                     break;
                 case "cheetah":
-                    String now = GameEngine.ATTACK.equals(me.decision) ? "هجوم" : "اختباء";
-                    String other = GameEngine.ATTACK.equals(me.decision) ? "اختباء" : "هجوم";
                     title = "السرعة: رأيت كل الحيوانات. هل تغيّر قرارك؟";
-                    opts.put(option("keep", "أبقِ القرار (" + now + ")"));
-                    opts.put(option("switch", "غيّر إلى " + other));
+                    opts.put(option("keep", "أبقِ قراري كما هو"));
+                    for (GameEngine.Player p : engine.alive()) if (p != me) opts.put(option("attack:" + p.id, "هجوم على " + p.name));
+                    opts.put(option(GameEngine.HIDE, "اختباء"));
                     break;
                 case "zebra":
                     title = "الخطوط المربكة: اختر مفترساً يخسر مكافأة الصيد";
@@ -320,6 +489,8 @@ public class HostController {
                 r.put("animal", animalJson(p.animal));
                 if (scored) {
                     r.put("decision", p.decision);
+                    GameEngine.Player at = p.attackTarget == null ? null : engine.byId(p.attackTarget);
+                    r.put("decisionText", GameEngine.HIDE.equals(p.decision) ? "اختباء" : "هجوم على " + (at == null ? "" : at.name));
                     r.put("total", p.total);
                     r.put("out", p.eliminatedThisRound);
                     r.put("won", p.wonRound);
@@ -340,6 +511,94 @@ public class HostController {
             v.put("scored", scored);
         }
         if (engine.winner != null) v.put("winner", engine.winner.name);
+        return v;
+    }
+
+    private JSONArray partsJson(List<GameEngine.Part> parts) throws JSONException {
+        JSONArray arr = new JSONArray();
+        for (GameEngine.Part part : parts) {
+            JSONObject po = new JSONObject();
+            po.put("label", part.label);
+            po.put("value", part.value);
+            po.put("ignored", part.ignored);
+            arr.put(po);
+        }
+        return arr;
+    }
+
+    private JSONObject duelView(JSONObject v, String id) throws JSONException {
+        int me = duel.indexOf(id), op = 1 - me;
+        DuelGame.Side mine = duel.sides[me], theirs = duel.sides[op];
+        v.put("duelRound", duel.round);
+        v.put("opponent", theirs.name);
+        v.put("myCrowns", mine.crowns);
+        v.put("opCrowns", theirs.crowns);
+        v.put("myDuels", mine.duelsWon);
+        v.put("opDuels", theirs.duelsWon);
+        JSONArray hand = new JSONArray();
+        for (Cards.Animal a : mine.hand) hand.put(animalJson(a));
+        v.put("hand", hand);
+        JSONArray opHand = new JSONArray();
+        for (Cards.Animal a : theirs.hand) opHand.put(animalJson(a));
+        v.put("opHand", opHand);
+        JSONArray market = new JSONArray();
+        for (Cards.Animal a : duel.market) market.put(animalJson(a));
+        v.put("market", market);
+        if (duel.drafting()) v.put("drafter", duel.sides[duel.drafter()].name);
+        JSONArray order = new JSONArray();
+        for (Cards.Animal a : mine.order) order.put(animalJson(a));
+        v.put("order", order);
+        v.put("strike", mine.strike);
+
+        String kind = pending.get(id);
+        if (kind != null) {
+            JSONObject pr = new JSONObject();
+            pr.put("kind", kind);
+            JSONArray opts = new JSONArray();
+            String title = "";
+            if (kind.equals("draft")) {
+                title = "دورك: اختر حيواناً من الساحة";
+                for (Cards.Animal a : duel.market) opts.put(option(a.key, a.name + " (" + a.power + ")"));
+            } else if (kind.equals("place")) {
+                int slot = mine.order.size() + 1;
+                title = "اختر الحيوان الذي يدخل المبارزة " + slot;
+                for (Cards.Animal a : mine.hand) if (!mine.order.contains(a)) opts.put(option(a.key, a.name + " (" + a.power + ")"));
+            } else if (kind.equals("strike")) {
+                title = "ضع الضربة القوية (+" + DuelGame.STRIKE + ") على مبارزة واحدة";
+                for (int i = 0; i < mine.order.size(); i++)
+                    opts.put(option(String.valueOf(i), "المبارزة " + (i + 1) + ": " + mine.order.get(i).name));
+            }
+            pr.put("title", title);
+            pr.put("options", opts);
+            v.put("prompt", pr);
+        }
+
+        JSONArray ds = new JSONArray();
+        for (DuelGame.Duel d : duel.duels) {
+            JSONObject o = new JSONObject();
+            o.put("n", d.index + 1);
+            o.put("envName", d.env.name);
+            o.put("envText", d.env.text);
+            o.put("eventName", d.event.name);
+            o.put("eventText", d.event.text);
+            JSONArray rows = new JSONArray();
+            for (int k : new int[]{me, op}) {
+                JSONObject r = new JSONObject();
+                r.put("name", duel.sides[k].name);
+                r.put("animal", animalJson(d.animals[k]));
+                r.put("total", d.total[k]);
+                r.put("won", d.winner == k);
+                r.put("strike", d.strike[k]);
+                r.put("parts", partsJson(d.parts.get(k)));
+                rows.put(r);
+            }
+            o.put("rows", rows);
+            ds.put(o);
+        }
+        v.put("duels", ds);
+        v.put("revealed", duel.duels.size());
+        if (duel.roundWinner != null) v.put("roundWinner", duel.roundWinner.name);
+        if (duel.winner != null) v.put("winner", duel.winner.name);
         return v;
     }
 }

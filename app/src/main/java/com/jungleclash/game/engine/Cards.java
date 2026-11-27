@@ -41,7 +41,7 @@ public final class Cards {
     public static final List<Animal> ANIMALS = Collections.unmodifiableList(Arrays.asList(
         new Animal("elephant", "الفيل", 18, false, "الدرع العملاق", "تُلغى مكافأة الصيد لكل المفترسين في هذه الجولة."),
         new Animal("lion", "الأسد", 17, true, "زئير الملك", "يأخذ +5 بدل +3 عن كل فريسة في الساحة."),
-        new Animal("rhino", "وحيد القرن", 16, false, "الجلد الصلب", "لا يمكن إقصاؤه في هذه الجولة مهما كانت نقاطه."),
+        new Animal("rhino", "وحيد القرن", 16, false, "الجلد الصلب", "مرة واحدة في اللعبة: لا يمكن إقصاؤه مهما كانت نقاطه."),
         new Animal("croc", "التمساح", 15, true, "كمين الماء", "يأخذ +5 إذا كانت بيئة الجولة هي النهر."),
         new Animal("tiger", "النمر", 14, true, "الكمين", "تُلغى حماية القطيع لكل غير المفترسين في الساحة."),
         new Animal("buffalo", "الجاموس", 13, false, "الثور الهائج", "حماية القطيع له +5 بدل +2."),
@@ -51,7 +51,7 @@ public final class Cards {
         new Animal("hyena", "الضبع", 9, true, "القمّام", "يأخذ +2 عن كل لاعب خرج في الجولة السابقة."),
         new Animal("wolf", "الذئب", 8, true, "عواء القطيع", "يأخذ +2 عن كل مفترس آخر في الساحة."),
         new Animal("giraffe", "الزرافة", 7, false, "العين العالية", "ترى حيوان لاعب واحد قبل الكشف."),
-        new Animal("gazelle", "الغزالة", 6, false, "القفزة", "إن كانت ستُقصى تنجو، ويُقصى صاحب النقاط الأقل التالي."),
+        new Animal("gazelle", "الغزالة", 6, false, "القفزة", "مرة واحدة في اللعبة: إن كانت ستُقصى تنجو، ويُقصى التالي."),
         new Animal("zebra", "الحمار الوحشي", 5, false, "الخطوط المربكة", "يختار مفترساً واحداً في الساحة يخسر مكافأة الصيد."),
         new Animal("cobra", "الكوبرا", 4, true, "اللدغة", "إن كان الفيل في الساحة يخسر 6 نقاط."),
         new Animal("fox", "الثعلب", 3, true, "المكر", "يبدّل حيوانه مع حيوان لاعب آخر قبل الكشف."),
@@ -66,14 +66,14 @@ public final class Cards {
     }
 
     public static final List<Env> ENVS = Collections.unmodifiableList(Arrays.asList(
-        new Env("forest", "الغابة", "+2 للنمر والفهد والغوريلا والثعلب والأيل",
-            fx("tiger", 2, "cheetah", 2, "gorilla", 2, "fox", 2, "deer", 2)),
+        new Env("forest", "الغابة", "+2 للنمر والفهد والغوريلا والثعلب والقرد والأيل",
+            fx("tiger", 2, "cheetah", 2, "gorilla", 2, "fox", 2, "baboon", 2, "deer", 2)),
         new Env("river", "النهر", "+3 لفرس النهر والتمساح، +2 للفيل، −2 للأسد",
             fx("hippo", 3, "croc", 3, "elephant", 2, "lion", -2)),
         new Env("desert", "الصحراء", "+3 للغزالة، +2 للثعلب والكوبرا، −2 لفرس النهر",
             fx("gazelle", 3, "fox", 2, "cobra", 2, "hippo", -2)),
-        new Env("savanna", "السافانا", "+2 للأسد والفيل والجاموس والزرافة والحمار الوحشي",
-            fx("lion", 2, "elephant", 2, "buffalo", 2, "giraffe", 2, "zebra", 2)),
+        new Env("savanna", "السافانا", "+2 للأسد والفيل والجاموس والزرافة والحمار الوحشي والقرد",
+            fx("lion", 2, "elephant", 2, "buffalo", 2, "giraffe", 2, "zebra", 2, "baboon", 2)),
         new Env("mountains", "الجبال", "+2 للذئب ووحيد القرن، −2 للزرافة",
             fx("wolf", 2, "rhino", 2, "giraffe", -2))
     ));

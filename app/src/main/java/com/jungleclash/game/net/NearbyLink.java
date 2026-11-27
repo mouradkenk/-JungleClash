@@ -37,21 +37,28 @@ public class NearbyLink {
         void onDisconnected(String endpointId);
         void onMessage(String endpointId, String message);
         void onError(String message);
+        /** A connection attempt ended without connecting (rejected = the host said no). */
+        void onConnectFailed(String endpointId, boolean rejected);
     }
 
-    public interface AcceptFilter { boolean accept(String endpointId); }
+    /** Host only: decides on each join request. Call accept() or reject() later. */
+    public interface Gate { void onRequest(String endpointId, String name); }
 
     private final ConnectionsClient client;
     private final Listener listener;
     private final Map<String, String> pendingNames = new HashMap<>();
-    private AcceptFilter acceptFilter = id -> true;
+    private Gate gate;            // null = accept automatically (player phones)
 
     public NearbyLink(Context context, Listener listener) {
         this.client = Nearby.getConnectionsClient(context);
         this.listener = listener;
     }
 
-    public void setAcceptFilter(AcceptFilter filter) { this.acceptFilter = filter; }
+    public void setGate(Gate gate) { this.gate = gate; }
+
+    public void accept(String endpointId) { client.acceptConnection(endpointId, payloadCallback); }
+
+    public void reject(String endpointId) { client.rejectConnection(endpointId); }
 
     private final PayloadCallback payloadCallback = new PayloadCallback() {
         @Override
@@ -68,8 +75,8 @@ public class NearbyLink {
         @Override
         public void onConnectionInitiated(String endpointId, ConnectionInfo info) {
             pendingNames.put(endpointId, info.getEndpointName());
-            if (acceptFilter.accept(endpointId)) client.acceptConnection(endpointId, payloadCallback);
-            else client.rejectConnection(endpointId);
+            if (gate == null) client.acceptConnection(endpointId, payloadCallback);
+            else gate.onRequest(endpointId, info.getEndpointName());
         }
 
         @Override
@@ -78,7 +85,8 @@ public class NearbyLink {
                 String name = pendingNames.get(endpointId);
                 listener.onConnected(endpointId, name == null ? "" : name);
             } else {
-                listener.onError("تعذّر الاتصال. حاول مرة أخرى.");
+                int code = result.getStatus().getStatusCode();
+                listener.onConnectFailed(endpointId, code == ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED);
             }
         }
 

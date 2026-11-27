@@ -209,7 +209,9 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
     private void startHosting() {
         host = new HostController(this);
-        link.setAcceptFilter(id -> host != null && host.acceptsPlayers());
+        link.setGate((id, name) -> runOnUiThread(() -> {
+            if (host == null || !host.addRequest(id, name)) link.reject(id);
+        }));
         link.startHosting(myName);
         host.onHello(HostController.LOCAL_ID, myName);
     }
@@ -217,7 +219,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     private void startSearching() {
         searching = true;
         found.clear();
-        link.setAcceptFilter(id -> true);
+        link.setGate(null);
         link.startSearching();
         showSearch("ابحث عن غرفة قريبة…");
     }
@@ -233,7 +235,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         for (Map.Entry<String, String> e : found.entrySet()) {
             String id = e.getKey();
             root.addView(button("غرفة " + e.getValue(), HERB, v -> {
-                showSearch("جارٍ الاتصال بغرفة " + e.getValue() + "…");
+                showSearch("أُرسل طلبك إلى غرفة " + e.getValue() + ". بانتظار موافقة المضيف…");
                 link.join(myName, id);
             }));
             space(8);
@@ -281,6 +283,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     public void onDisconnected(String endpointId) {
         runOnUiThread(() -> {
             if (host != null) {
+                host.removeRequest(endpointId);
                 host.onDisconnected(endpointId);
             } else if (endpointId.equals(hostEndpoint)) {
                 hostEndpoint = null;
@@ -309,6 +312,15 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     @Override
     public void onError(String message) { runOnUiThread(() -> toastDialog(message)); }
 
+    @Override
+    public void onConnectFailed(String endpointId, boolean rejected) {
+        runOnUiThread(() -> {
+            if (host != null) { host.removeRequest(endpointId); return; }
+            toastDialog(rejected ? "رفض المضيف طلب الانضمام." : "تعذّر الاتصال بالغرفة. حاول مرة أخرى.");
+            if (searching) showSearch("اختر الغرفة التي تريد الانضمام إليها:");
+        });
+    }
+
     /** HostController.Sender: deliver a view to a player (or to this phone). */
     @Override
     public void send(String playerId, String json) {
@@ -323,6 +335,10 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
     private void choose(String kind, String value) {
         answered.add(kind + "#" + (lastView == null ? 0 : lastView.optInt("round")));
+        sendChoice(kind, value);
+    }
+
+    private void sendChoice(String kind, String value) {
         if (host != null) {
             host.onChoice(HostController.LOCAL_ID, kind, value);
         } else if (hostEndpoint != null) {
@@ -346,6 +362,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         boolean isHost = v.optBoolean("isHost");
 
         if (phase.equals("lobby")) { renderLobby(v, isHost); return; }
+        if (v.optString("mode").equals("duel")) { renderDuel(v, isHost); return; }
 
         // ---- header
         int round = v.optInt("round");
@@ -360,12 +377,13 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
         // ---- my animal or spirit
         JSONObject animal = v.optJSONObject("animal");
-        if (v.optBoolean("alive") && animal != null) {
+        if (v.optBoolean("alive") && animal == null) {
+            // choosing phase: the hand is shown with the prompt below
+        } else if (v.optBoolean("alive")) {
             root.addView(animalCard(animal, true));
-            String dec = v.optString("decision");
             if (!phase.equals("pre") && !phase.equals("decide")) {
                 space(6);
-                TextView d = text("قرارك: " + (dec.equals("attack") ? "هجوم" : "اختباء"), 15, MUTED, true);
+                TextView d = text("قرارك: " + v.optString("decisionText"), 15, MUTED, true);
                 d.setGravity(Gravity.CENTER);
                 root.addView(d);
             }
@@ -387,7 +405,8 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         JSONObject prompt = v.optJSONObject("prompt");
         if (prompt == null) answered.clear(); // the host has processed our last answer
         if (prompt != null && !answered.contains(prompt.optString("kind") + "#" + round)) {
-            renderPrompt(prompt);
+            if (prompt.optString("kind").equals("pick")) renderHand(v.optJSONArray("hand"));
+            else renderPrompt(prompt);
         } else if (phase.equals("pre") || phase.equals("decide") || phase.equals("post")) {
             root.addView(waitingBox(v));
         }
@@ -423,12 +442,11 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
         if (isHost && (phase.equals("result") || phase.equals("over"))) {
             space(14);
-            root.addView(button(phase.equals("over") ? "لعبة جديدة بنفس اللاعبين" : "الجولة التالية", HERB, x -> {
-                answered.clear();
-                host.nextRound();
-            }));
+            if (phase.equals("result")) root.addView(button("الجولة التالية", HERB, x -> { answered.clear(); host.nextRound(); }));
+            else newGameButtons(v);
         } else if (phase.equals("result") || phase.equals("over")) {
             space(10);
+            if (phase.equals("over")) { root.addView(roomBoard(v)); space(8); }
             TextView t = text("بانتظار المضيف ليبدأ " + (phase.equals("over") ? "لعبة جديدة…" : "الجولة التالية…"), 14, MUTED, false);
             t.setGravity(Gravity.CENTER);
             root.addView(t);
@@ -436,6 +454,234 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
         space(18);
         root.addView(playersStrip(v));
+    }
+
+    private void newGameButtons(JSONObject v) {
+        root.addView(roomBoard(v));
+        space(10);
+        if (v.optBoolean("canDuel")) {
+            root.addView(button("لعبة جديدة: وضع المبارزة", ATTACK, x -> { answered.clear(); host.newGame("duel"); }));
+            space(8);
+            root.addView(button("لعبة جديدة: الوضع العادي", HERB, x -> { answered.clear(); host.newGame("normal"); }));
+        } else {
+            root.addView(button("لعبة جديدة بنفس اللاعبين", HERB, x -> { answered.clear(); host.newGame("normal"); }));
+        }
+    }
+
+    /** Crowns won in this room, across all games since the room was created. */
+    private View roomBoard(JSONObject v) {
+        JSONArray ps = v.optJSONArray("players");
+        StringBuilder sb = new StringBuilder();
+        List<JSONObject> list = new ArrayList<>();
+        for (int i = 0; ps != null && i < ps.length(); i++) list.add(ps.optJSONObject(i));
+        list.sort((a, b) -> Integer.compare(b.optInt("roomCrowns"), a.optInt("roomCrowns")));
+        for (JSONObject p : list)
+            sb.append(sb.length() > 0 ? "\n" : "").append("• ").append(p.optString("name")).append(": ")
+              .append(p.optInt("roomCrowns")).append(p.optInt("roomCrowns") == 1 ? " تاج" : " تيجان");
+        return infoBox("تيجان الغرفة", sb.toString());
+    }
+
+    // ================================================================ duel mode (2 players)
+
+    private void renderDuel(JSONObject v, boolean isHost) {
+        String phase = v.optString("phase");
+        header("المبارزة · الجولة " + v.optInt("duelRound"));
+        String score = "أنت: " + v.optInt("myCrowns") + " تاج   ·   " + v.optString("opponent") + ": " + v.optInt("opCrowns") + " تاج";
+        TextView sc = text(score, 16, GOLD_LIGHT, true);
+        sc.setGravity(Gravity.CENTER);
+        root.addView(sc);
+        if (v.optInt("revealed") > 0) {
+            TextView dw = text("المبارزات في هذه الجولة: أنت " + v.optInt("myDuels") + " – " + v.optInt("opDuels"), 14, MUTED, false);
+            dw.setGravity(Gravity.CENTER);
+            root.addView(dw);
+        }
+        space(10);
+        JSONObject prompt = v.optJSONObject("prompt");
+        if (prompt == null) answered.clear();
+        boolean canAnswer = prompt != null && !answered.contains(prompt.optString("kind") + "#" + v.optInt("duelRound") + "#" + v.optJSONArray("order").length() + "#" + v.optJSONArray("hand").length());
+
+        if (phase.equals("draft")) {
+            root.addView(infoBox("اختيار الحيوانات بالتناوب", "الدور على: " + v.optString("drafter")
+                + "\nالترتيب: الأول يختار 1، ثم الثاني 2، ثم الأول 2، وتبقى الأخيرة للثاني."));
+            space(8);
+            root.addView(text("في الساحة", 18, GOLD_LIGHT, true));
+            JSONArray market = v.optJSONArray("market");
+            for (int i = 0; market != null && i < market.length(); i++) {
+                JSONObject a = market.optJSONObject(i);
+                String key = a.optString("key");
+                space(6);
+                root.addView(compactAnimal(a, canAnswer ? "اختر" : null, canAnswer ? x -> duelChoose(v, "draft", key) : null));
+            }
+            space(10);
+            root.addView(text("حيواناتك", 16, GOLD_LIGHT, true));
+            addCompactList(v.optJSONArray("hand"));
+            space(6);
+            root.addView(text("حيوانات " + v.optString("opponent"), 16, GOLD_LIGHT, true));
+            addCompactList(v.optJSONArray("opHand"));
+        } else if (phase.equals("arrange")) {
+            root.addView(infoBox("رتّب حيواناتك سراً", "اختر من يدخل كل مبارزة، ثم ضع الضربة القوية (+4) على مبارزة واحدة. البيئة والحدث يُسحبان عشوائياً عند كشف كل مبارزة."));
+            space(8);
+            JSONArray order = v.optJSONArray("order");
+            for (int i = 0; order != null && i < order.length(); i++)
+                root.addView(text("المبارزة " + (i + 1) + ": " + order.optJSONObject(i).optString("name"), 16, Color.WHITE, true));
+            space(8);
+            if (canAnswer) {
+                JSONObject pr = prompt;
+                String kind = pr.optString("kind");
+                if (kind.equals("place")) {
+                    root.addView(text(pr.optString("title"), 18, GOLD_LIGHT, true));
+                    JSONArray hand = v.optJSONArray("hand");
+                    for (int i = 0; hand != null && i < hand.length(); i++) {
+                        JSONObject a = hand.optJSONObject(i);
+                        boolean placed = false;
+                        for (int k = 0; order != null && k < order.length(); k++)
+                            if (order.optJSONObject(k).optString("key").equals(a.optString("key"))) placed = true;
+                        if (placed) continue;
+                        String key = a.optString("key");
+                        space(6);
+                        root.addView(compactAnimal(a, "للمبارزة " + (order.length() + 1), x -> duelChoose(v, "place", key)));
+                    }
+                } else {
+                    renderDuelPrompt(v, pr);
+                }
+            } else {
+                root.addView(waitingBox(v));
+            }
+        } else {
+            JSONArray order = v.optJSONArray("order");
+            StringBuilder plan = new StringBuilder();
+            for (int i = 0; order != null && i < order.length(); i++)
+                plan.append(i > 0 ? "   ·   " : "").append(i + 1).append(": ").append(order.optJSONObject(i).optString("name"))
+                    .append(v.optInt("strike") == i ? " (+4)" : "");
+            TextView pl = text("خطتك:  " + plan, 14, MUTED, false);
+            pl.setGravity(Gravity.CENTER);
+            root.addView(pl);
+            JSONArray ds = v.optJSONArray("duels");
+            for (int i = 0; ds != null && i < ds.length(); i++) {
+                space(12);
+                root.addView(duelBlock(ds.optJSONObject(i)));
+            }
+            space(14);
+            if (phase.equals("duel")) {
+                int next = v.optInt("revealed") + 1;
+                if (isHost) root.addView(button("اكشف المبارزة " + next, ATTACK, x -> host.revealNextDuel()));
+                else {
+                    TextView t = text("بانتظار المضيف ليكشف المبارزة " + next + "…", 15, MUTED, false);
+                    t.setGravity(Gravity.CENTER);
+                    root.addView(t);
+                }
+            } else if (phase.equals("result")) {
+                root.addView(infoBox("انتهت الجولة", v.optString("roundWinner") + " فاز بالجولة وأخذ تاجاً."));
+                space(10);
+                if (isHost) root.addView(button("الجولة التالية", HERB, x -> { answered.clear(); host.nextRound(); }));
+            } else if (phase.equals("over")) {
+                LinearLayout win = new LinearLayout(this);
+                win.setOrientation(LinearLayout.VERTICAL);
+                win.setGravity(Gravity.CENTER);
+                win.setPadding(dp(16), dp(16), dp(16), dp(16));
+                win.setBackground(rounded(HERB_DARK, GOLD, 16));
+                ImageView logo = new ImageView(this);
+                logo.setImageResource(R.drawable.logo);
+                win.addView(logo, new LinearLayout.LayoutParams(dp(90), dp(90)));
+                TextView w = text("ملك الغابة: " + v.optString("winner"), 26, GOLD_LIGHT, true);
+                w.setGravity(Gravity.CENTER);
+                win.addView(w);
+                root.addView(win);
+                space(12);
+                if (isHost) newGameButtons(v);
+                else root.addView(roomBoard(v));
+            }
+        }
+        space(18);
+        root.addView(playersStrip(v));
+    }
+
+    private void renderDuelPrompt(JSONObject v, JSONObject prompt) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(14), dp(14), dp(14), dp(14));
+        box.setBackground(rounded(PANEL, GOLD, 14));
+        box.addView(text(prompt.optString("title"), 18, INK, true));
+        JSONArray opts = prompt.optJSONArray("options");
+        String kind = prompt.optString("kind");
+        for (int i = 0; opts != null && i < opts.length(); i++) {
+            JSONObject o = opts.optJSONObject(i);
+            String id = o.optString("id");
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+            lp.topMargin = dp(8);
+            box.addView(button(o.optString("label"), ATTACK, x -> duelChoose(v, kind, id)), lp);
+        }
+        root.addView(box);
+    }
+
+    private void duelChoose(JSONObject v, String kind, String value) {
+        answered.add(kind + "#" + v.optInt("duelRound") + "#" + v.optJSONArray("order").length() + "#" + v.optJSONArray("hand").length());
+        sendChoice(kind, value);
+    }
+
+    private void addCompactList(JSONArray arr) {
+        if (arr == null || arr.length() == 0) {
+            root.addView(text("—", 14, MUTED, false));
+            return;
+        }
+        for (int i = 0; i < arr.length(); i++) {
+            space(4);
+            root.addView(compactAnimal(arr.optJSONObject(i), null, null));
+        }
+    }
+
+    private View compactAnimal(JSONObject a, String action, View.OnClickListener onClick) {
+        boolean pred = a.optBoolean("pred");
+        LinearLayout box = row();
+        box.setGravity(Gravity.CENTER_VERTICAL);
+        box.setPadding(dp(8), dp(8), dp(8), dp(8));
+        box.setBackground(rounded(pred ? PRED_DARK : HERB_DARK, GOLD, 12));
+        ImageView img = new ImageView(this);
+        int res = getResources().getIdentifier("a_" + a.optString("key"), "drawable", getPackageName());
+        if (res != 0) img.setImageResource(res);
+        img.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        img.setBackground(rounded(Color.BLACK, GOLD, 8));
+        img.setClipToOutline(true);
+        box.addView(img, new LinearLayout.LayoutParams(dp(84), dp(60)));
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setPadding(dp(10), 0, dp(10), 0);
+        mid.addView(text(a.optString("name") + "  (" + a.optInt("power") + ")", 17, Color.WHITE, true));
+        mid.addView(text((pred ? "مفترس" : "غير مفترس") + " · " + a.optString("abilityName"), 13, MUTED, false));
+        box.addView(mid, weight());
+        if (action != null) {
+            Button b = button(action, pred ? PRED : HERB, onClick);
+            b.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
+            b.setMinHeight(dp(44));
+            box.addView(b);
+        }
+        return box;
+    }
+
+    private View duelBlock(JSONObject d) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(10), dp(10), dp(10), dp(10));
+        box.setBackground(rounded(Color.parseColor("#0B1C12"), GOLD, 14));
+        box.addView(text("المبارزة " + d.optInt("n"), 19, GOLD_LIGHT, true));
+        LinearLayout chips = row();
+        chips.addView(chip("البيئة: " + d.optString("envName"), d.optString("envText"), HERB), weight());
+        chips.addView(chip("الحدث: " + d.optString("eventName"), d.optString("eventText"), EVENT), weight());
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, -2);
+        cp.topMargin = dp(6);
+        box.addView(chips, cp);
+        JSONArray rows = d.optJSONArray("rows");
+        for (int i = 0; rows != null && i < rows.length(); i++) {
+            JSONObject r = rows.optJSONObject(i);
+            try {
+                r.put("decisionText", r.optBoolean("strike") ? "الضربة القوية" : "بدون ضربة");
+                r.put("out", false);
+            } catch (JSONException ignored) { }
+            LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, -2);
+            rp.topMargin = dp(8);
+            box.addView(resultRow(r, true), rp);
+        }
+        return box;
     }
 
     private void renderLobby(JSONObject v, boolean isHost) {
@@ -451,16 +697,54 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             t.setPadding(0, dp(4), 0, dp(4));
             root.addView(t);
         }
+        JSONArray rq = v.optJSONArray("requests");
+        if (isHost && rq != null && rq.length() > 0) {
+            space(12);
+            root.addView(text("طلبات الانضمام", 18, GOLD_LIGHT, true));
+            for (int i = 0; i < rq.length(); i++) {
+                JSONObject r = rq.optJSONObject(i);
+                String id = r.optString("id");
+                LinearLayout line = row();
+                line.setGravity(Gravity.CENTER_VERTICAL);
+                line.setPadding(dp(10), dp(8), dp(10), dp(8));
+                line.setBackground(rounded(PANEL, GOLD, 12));
+                line.addView(text(r.optString("label") + " يريد الانضمام", 16, INK, true), weight());
+                Button ok = button("قبول", HERB, x -> { link.accept(id); host.removeRequest(id); });
+                ok.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
+                ok.setMinHeight(dp(44));
+                line.addView(ok);
+                Button no = button("رفض", PRED, x -> { link.reject(id); host.removeRequest(id); });
+                LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(-2, -2);
+                np.setMarginStart(dp(6));
+                no.setLayoutParams(np);
+                no.setMinHeight(dp(44));
+                line.addView(no);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+                lp.topMargin = dp(6);
+                root.addView(line, lp);
+            }
+        }
         space(16);
         if (isHost) {
-            Button start = button(n >= 2 ? "ابدأ اللعب" : "بانتظار لاعب واحد على الأقل…", HERB, x -> {
+            if (n == 2) {
+                root.addView(infoBox("أسلوب اللعب", "مع لاعبَين ننصح بوضع «المبارزة»: تختاران 6 حيوانات بالتناوب، ثم 3 مبارزات تُسحب لكل منها بيئة وحدث عشوائيان."));
+                space(10);
+                root.addView(button("ابدأ: وضع المبارزة (مقترح)", ATTACK, x -> {
+                    link.stopAdvertising();
+                    answered.clear();
+                    host.startGame("duel");
+                }));
+                space(8);
+            }
+            Button start = button(n >= 2 ? (n == 2 ? "ابدأ: الوضع العادي" : "ابدأ اللعب") : "بانتظار لاعب واحد على الأقل…", HERB, x -> {
                 link.stopAdvertising();
                 answered.clear();
-                host.startGame();
+                host.startGame("normal");
             });
             start.setEnabled(n >= 2);
             start.setAlpha(n >= 2 ? 1f : 0.5f);
             root.addView(start);
+            if (n >= 2) { space(10); root.addView(roomBoard(v)); }
         }
         space(10);
         root.addView(button("مغادرة", Color.DKGRAY, x -> leave()));
@@ -484,6 +768,21 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             box.addView(button(o.optString("label"), color, x -> choose(kind, id)), lp);
         }
         root.addView(box);
+    }
+
+    private void renderHand(JSONArray hand) {
+        TextView t = text("اختر حيوانك لهذه الجولة سراً", 20, GOLD_LIGHT, true);
+        t.setGravity(Gravity.CENTER);
+        root.addView(t);
+        root.addView(text("الحيوان الآخر يعود إلى الكومة.", 14, MUTED, false));
+        for (int i = 0; hand != null && i < hand.length(); i++) {
+            JSONObject a = hand.optJSONObject(i);
+            space(10);
+            root.addView(animalCard(a, true));
+            space(6);
+            String key = a.optString("key");
+            root.addView(button("أختار " + a.optString("name"), a.optBoolean("pred") ? PRED : HERB, x -> choose("pick", key)));
+        }
     }
 
     private View waitingBox(JSONObject v) {
@@ -577,7 +876,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         mid.setPadding(dp(10), 0, dp(10), 0);
         String status = r.optBoolean("out") ? " · خرج" : (r.optBoolean("won") ? " · الأعلى" : "");
         mid.addView(text(r.optString("name") + status, 17, Color.WHITE, true));
-        String dec = scored ? (r.optString("decision").equals("attack") ? " · هجوم" : " · اختباء") : "";
+        String dec = scored ? " · " + r.optString("decisionText") : "";
         mid.addView(text(a.optString("name") + " (" + a.optInt("power") + ")" + dec, 14, MUTED, false));
         if (r.optInt("crowns") > 0) mid.addView(text("التيجان: " + r.optInt("crowns"), 13, GOLD_LIGHT, true));
         top.addView(mid, weight());
@@ -594,7 +893,8 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             for (int i = 0; i < parts.length(); i++) {
                 JSONObject p = parts.optJSONObject(i);
                 int val = p.optInt("value");
-                String sign = val > 0 ? "+" + val : String.valueOf(val);
+                // Isolate the number so Arabic text does not flip "-3" into "3-".
+                String sign = "\u2066" + (val > 0 ? "+" + val : val < 0 ? "−" + (-val) : "0") + "\u2069";
                 sb.append(i > 0 ? "  ·  " : "").append(p.optString("label")).append(" ").append(sign);
                 if (p.optBoolean("ignored")) sb.append(" (تجاهله الاختباء)");
             }
@@ -611,7 +911,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         for (int i = 0; ps != null && i < ps.length(); i++) {
             JSONObject p = ps.optJSONObject(i);
             sb.append(i > 0 ? "   " : "").append(p.optBoolean("alive") ? "● " : "○ ").append(p.optString("name"));
-            if (p.optInt("crowns") > 0) sb.append(" (").append(p.optInt("crowns")).append(" تاج)");
+            if (p.optInt("roomCrowns") > 0) sb.append(" · تيجان الغرفة ").append(p.optInt("roomCrowns"));
         }
         TextView t = text(sb.toString(), 13, MUTED, false);
         t.setGravity(Gravity.CENTER);

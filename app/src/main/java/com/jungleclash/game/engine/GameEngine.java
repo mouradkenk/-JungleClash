@@ -31,6 +31,8 @@ public class GameEngine {
         public int crowns = 0;
         public Cards.Animal animal;
         public String decision = HIDE;
+        public String attackTarget;     // id of the player attacked
+        public List<Cards.Animal> hand = new ArrayList<>();
         public String voteFor;          // spirits only
         public boolean deerBonus;       // from previous round
         public int total;
@@ -48,6 +50,7 @@ public class GameEngine {
     public Cards.Event event;
     public int eliminatedLastRound = 0;
     public String zebraTargetId;
+    public final java.util.Set<String> protectionUsed = new java.util.HashSet<>();
     public Player winner;
     private final Random rnd;
 
@@ -88,7 +91,7 @@ public class GameEngine {
 
     public boolean isOver() { return winner != null; }
 
-    /** Starts a new round: draws environment and event, deals animals, applies migration. */
+    /** Starts a new round: draws environment and event, deals each player a hand of two animals. */
     public void startRound() {
         if (round == 0) startCount = players.size();
         round++;
@@ -100,14 +103,29 @@ public class GameEngine {
         List<Player> al = alive();
         for (int i = 0; i < al.size(); i++) {
             Player p = al.get(i);
-            p.animal = deck.get(i);
+            p.hand = new ArrayList<>();
+            p.hand.add(deck.get(2 * i));
+            p.hand.add(deck.get(2 * i + 1));
+            p.animal = null;
             p.decision = HIDE;
+            p.attackTarget = null;
             p.parts = new ArrayList<>();
             p.total = 0;
             p.eliminatedThisRound = false;
             p.wonRound = false;
         }
         for (Player p : players) { p.voteFor = null; p.eliminatedThisRound = false; p.wonRound = false; }
+    }
+
+    /** A player keeps one of the two animals in hand. */
+    public boolean pick(Player p, String key) {
+        for (Cards.Animal a : p.hand) if (a.key.equals(key)) { p.animal = a; return true; }
+        return false;
+    }
+
+    /** After everyone picked: the migration event moves every animal to the next player. */
+    public void afterPicks() {
+        List<Player> al = alive();
         if ("migration".equals(event.key) && al.size() > 1) {
             Cards.Animal first = al.get(0).animal;
             for (int i = 0; i < al.size() - 1; i++) al.get(i).animal = al.get(i + 1).animal;
@@ -179,6 +197,7 @@ public class GameEngine {
                 Integer d = env.effects.get(a.key);
                 if (d != null) parts.add(new Part("البيئة: " + env.name, d, "env"));
                 if (a.key.equals("croc") && env.key.equals("river")) parts.add(new Part("كمين الماء", 5, "ability"));
+                if (a.power <= 5 && d != null && d > 0) parts.add(new Part("رشاقة الصغار", 3, "ability"));
             }
             if (a.key.equals("hyena") && eliminatedLastRound > 0) parts.add(new Part("القمّام", 2 * eliminatedLastRound, "ability"));
             if (a.key.equals("elephant") && holder("cobra") != null) parts.add(new Part("لدغة الكوبرا", -6, "ability"));
@@ -218,10 +237,18 @@ public class GameEngine {
             sum(top);
         }
 
-        int max = Integer.MIN_VALUE;
-        for (Player p : arena) max = Math.max(max, p.total);
+        java.util.Map<String, Integer> before = new java.util.HashMap<>();
+        for (Player p : arena) before.put(p.id, p.total);
         for (Player p : arena) {
-            if (ATTACK.equals(p.decision)) p.parts.add(p.total >= max ? new Part("هجوم ناجح", 5, "decision") : new Part("هجوم فاشل", -3, "decision"));
+            if (ATTACK.equals(p.decision)) {
+                Player t = p.attackTarget == null ? null : byId(p.attackTarget);
+                if (t == null || t == p || !before.containsKey(t.id)) {
+                    for (Player q : arena) if (q != p) { t = q; break; }
+                }
+                boolean ok = t != null && before.get(p.id) > before.get(t.id);
+                String who = t == null ? "" : " على " + t.name;
+                p.parts.add(ok ? new Part("هجوم ناجح" + who, 5, "decision") : new Part("هجوم فاشل" + who, -3, "decision"));
+            }
             if (fire && HIDE.equals(p.decision)) p.parts.add(new Part("حريق الغابة: لا مكان للاختباء", -3, "event"));
         }
         for (Player p : arena) sum(p);
@@ -280,7 +307,11 @@ public class GameEngine {
         for (int i = sorted.size() - 1; i >= 0 && out < k; i--) {
             Player p = sorted.get(i);
             String key = p.animal.key;
-            if (key.equals("rhino") || key.equals("gazelle")) continue;
+            if ((key.equals("rhino") || key.equals("gazelle")) && !protectionUsed.contains(key)) {
+                protectionUsed.add(key);
+                p.parts.add(new Part(key.equals("rhino") ? "الجلد الصلب: نجا من الإقصاء" : "القفزة: نجت من الإقصاء", 0, "ability"));
+                continue;
+            }
             p.alive = false;
             p.eliminatedThisRound = true;
             out++;
