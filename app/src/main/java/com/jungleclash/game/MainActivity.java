@@ -23,6 +23,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import com.jungleclash.game.engine.Cards;
 import com.jungleclash.game.net.NearbyLink;
 
 import org.json.JSONArray;
@@ -66,6 +67,12 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     private JSONObject lastView;
     private final Map<String, String> found = new LinkedHashMap<>();
     private boolean searching;
+    private String hostName;        // name of the room we joined (for reconnecting)
+    private String autoJoin;        // when set, join this room as soon as it is found
+    private String lastFlipKey = "";       // which reveal was already animated
+    private int shownDuels = 0, shownDuelRound = 0;  // duels already revealed on this phone
+    private boolean countingDown;
+    private final android.os.Handler ui_handler = new android.os.Handler(android.os.Looper.getMainLooper());
     private final List<String> answered = new ArrayList<>(); // prompt keys already answered locally
 
     // ================================================================ lifecycle
@@ -94,7 +101,12 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         link = new NearbyLink(this, this);
         SharedPreferences prefs = getSharedPreferences("jc", MODE_PRIVATE);
         myName = prefs.getString("name", "");
-        showHome();
+        if (!prefs.getBoolean("tutorialSeen", false)) {
+            prefs.edit().putBoolean("tutorialSeen", true).apply();
+            showTutorial(0);
+        } else {
+            showHome();
+        }
     }
 
     @Override
@@ -114,6 +126,8 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     }
 
     private void leave() {
+        autoJoin = null;
+        hostName = null;
         link.shutdown();
         host = null;
         hostEndpoint = null;
@@ -201,7 +215,13 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             if (!saveName(name)) return;
             withPermissions(this::startSearching);
         }));
-        space(24);
+        space(18);
+        LinearLayout extras = pair(button("موسوعة الغابة", EVENT, v -> showEncyclopedia()),
+                                   button("القواعد", HIDE, v -> showRules()));
+        root.addView(extras);
+        space(8);
+        root.addView(button("جولة تعليمية", Color.parseColor("#6B4E1E"), v -> showTutorial(0)));
+        space(18);
         root.addView(infoBox("كيف تلعب",
             "• شغّلوا البلوتوث والموقع (GPS) على كل الهواتف.\n"
           + "• لاعب واحد ينشئ الغرفة، والباقون ينضمون إليها.\n"
@@ -234,6 +254,25 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         showSearch("ابحث عن غرفة قريبة…");
     }
 
+    private void showReconnect() {
+        root.removeAllViews();
+        header("انقطع الاتصال");
+        root.addView(infoBox("لا تقلق", "مكانك في اللعبة محفوظ عند المضيف. ستُلعب اختياراتك بأمان (اختباء) حتى تعود."));
+        space(14);
+        root.addView(button("إعادة الاتصال بغرفة " + (hostName == null ? "المضيف" : hostName), HERB, x -> {
+            withPermissions(() -> {
+                searching = true;
+                found.clear();
+                autoJoin = hostName;
+                link.setGate(null);
+                link.startSearching();
+                showSearch("أبحث عن غرفة " + (hostName == null ? "المضيف" : hostName) + "…");
+            });
+        }));
+        space(10);
+        root.addView(button("مغادرة اللعبة", Color.DKGRAY, x -> leave()));
+    }
+
     private void showSearch(String status) {
         root.removeAllViews();
         header("الانضمام إلى غرفة");
@@ -245,6 +284,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         for (Map.Entry<String, String> e : found.entrySet()) {
             String id = e.getKey();
             root.addView(button("غرفة " + e.getValue(), HERB, v -> {
+                hostName = e.getValue();
                 showSearch("أُرسل طلبك إلى غرفة " + e.getValue() + ". بانتظار موافقة المضيف…");
                 link.join(myName, id);
             }));
@@ -260,6 +300,12 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     public void onPeerFound(String endpointId, String name) {
         runOnUiThread(() -> {
             found.put(endpointId, name);
+            if (autoJoin != null && autoJoin.equals(name) && hostEndpoint == null) {
+                showSearch("وجدت غرفة " + name + ". جارٍ العودة إلى اللعبة…");
+                link.join(myName, endpointId);
+                autoJoin = null;
+                return;
+            }
             if (searching && hostEndpoint == null) showSearch("اختر الغرفة التي تريد الانضمام إليها:");
         });
     }
@@ -297,8 +343,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 host.onDisconnected(endpointId);
             } else if (endpointId.equals(hostEndpoint)) {
                 hostEndpoint = null;
-                toastDialog("انقطع الاتصال بالمضيف.");
-                leave();
+                showReconnect();
             }
         });
     }
@@ -311,7 +356,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 String t = m.optString("t");
                 if (host != null) {
                     if (t.equals("hello")) host.onHello(endpointId, m.optString("name"));
-                    else if (t.equals("choice")) host.onChoice(endpointId, m.optString("kind"), m.optString("value"));
+                    else if (t.equals("choice")) host.onChoice(host.playerFor(endpointId), m.optString("kind"), m.optString("value"));
                 } else if (t.equals("view")) {
                     render(m);
                 }
@@ -379,6 +424,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         String rTitle = v.optBoolean("twoPlayer") ? "الجولة " + round
                       : (v.optBoolean("finalRound") ? "الجولة " + round + " · النهائي" : "الجولة " + round);
         header(rTitle);
+        requestsBox(v);
         root.addView(pair(chip("البيئة: " + v.optString("envName"), v.optString("envText"), HERB),
                           chip("الحدث: " + v.optString("eventName"), v.optString("eventText"), EVENT)));
         space(12);
@@ -426,8 +472,13 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             boolean scored = v.optBoolean("scored");
             root.addView(text(scored ? "نتيجة الجولة" : "الحيوانات في الساحة", 20, GOLD_LIGHT, true));
             space(6);
+            String flipKey = v.optInt("round") + ":" + scored;
+            boolean animate = !flipKey.equals(lastFlipKey);
+            lastFlipKey = flipKey;
             for (int i = 0; i < arena.length(); i++) {
-                root.addView(resultRow(arena.optJSONObject(i), scored));
+                View row = resultRow(arena.optJSONObject(i), scored);
+                root.addView(row);
+                if (animate) flipIn(row, 250L * i);
                 space(8);
             }
         }
@@ -494,6 +545,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     private void renderDuel(JSONObject v, boolean isHost) {
         String phase = v.optString("phase");
         header("المبارزة · الجولة " + v.optInt("duelRound"));
+        requestsBox(v);
         String score = "أنت: " + v.optInt("myCrowns") + " تاج   ·   " + v.optString("opponent") + ": " + v.optInt("opCrowns") + " تاج";
         TextView sc = text(score, 16, GOLD_LIGHT, true);
         sc.setGravity(Gravity.CENTER);
@@ -565,12 +617,28 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             pl.setGravity(Gravity.CENTER);
             root.addView(pl);
             JSONArray ds = v.optJSONArray("duels");
+            int round = v.optInt("duelRound");
+            if (round != shownDuelRound) { shownDuelRound = round; shownDuels = 0; }
+            int revealed = ds == null ? 0 : ds.length();
+            boolean fresh = revealed > shownDuels;
             for (int i = 0; ds != null && i < ds.length(); i++) {
                 space(12);
-                root.addView(duelBlock(ds.optJSONObject(i)));
+                if (fresh && i == revealed - 1) {
+                    if (countingDown) { root.addView(countdownView("…")); continue; }
+                    startCountdown(revealed);
+                    root.addView(countdownView("3"));
+                    continue;
+                }
+                View block = duelBlock(ds.optJSONObject(i));
+                root.addView(block);
+                if (i == revealed - 1 && justRevealed == revealed) { flipIn(block, 0); justRevealed = 0; }
             }
             space(14);
-            if (phase.equals("duel")) {
+            if (countingDown || revealed > shownDuels) {
+                TextView t = text("استعدّوا…", 16, MUTED, true);
+                t.setGravity(Gravity.CENTER);
+                root.addView(t);
+            } else if (phase.equals("duel")) {
                 int next = v.optInt("revealed") + 1;
                 if (isHost) root.addView(button("اكشف المبارزة " + next, ATTACK, x -> host.revealNextDuel()));
                 else {
@@ -602,6 +670,39 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         }
         space(18);
         root.addView(playersStrip(v));
+    }
+
+    private int justRevealed = 0;
+    private TextView countdownLabel;
+
+    private View countdownView(String n) {
+        TextView t = text(n, 64, GOLD_LIGHT, true);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(0, dp(18), 0, dp(18));
+        t.setBackground(rounded(Color.parseColor("#0B1C12"), GOLD, 14));
+        countdownLabel = t;
+        return t;
+    }
+
+    /** 3, 2, 1 … then the duel card flips in. */
+    private void startCountdown(int revealed) {
+        countingDown = true;
+        ui_handler.postDelayed(() -> { if (countdownLabel != null) countdownLabel.setText("2"); }, 800);
+        ui_handler.postDelayed(() -> { if (countdownLabel != null) countdownLabel.setText("1"); }, 1600);
+        ui_handler.postDelayed(() -> {
+            countingDown = false;
+            shownDuels = revealed;
+            justRevealed = revealed;
+            if (lastView != null) render(lastView);
+        }, 2400);
+    }
+
+    /** Card-flip entrance: the view turns from its edge to face the player. */
+    private void flipIn(View v, long delay) {
+        v.setCameraDistance(8000 * getResources().getDisplayMetrics().density);
+        v.setRotationY(90f);
+        v.setAlpha(0f);
+        v.animate().rotationY(0f).alpha(1f).setStartDelay(delay).setDuration(450).start();
     }
 
     private void renderDuelPrompt(JSONObject v, JSONObject prompt) {
@@ -685,21 +786,11 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         return box;
     }
 
-    private void renderLobby(JSONObject v, boolean isHost) {
-        header(isHost ? "غرفتك جاهزة" : "في الغرفة");
-        root.addView(text(isHost ? "اطلب من اللاعبين الضغط على «الانضمام إلى غرفة قريبة»." : "بانتظار أن يبدأ المضيف اللعبة…", 15, MUTED, false));
-        space(12);
-        JSONArray ps = v.optJSONArray("players");
-        int n = ps == null ? 0 : ps.length();
-        root.addView(text("اللاعبون (" + n + " من 6)", 18, GOLD_LIGHT, true));
-        for (int i = 0; i < n; i++) {
-            JSONObject p = ps.optJSONObject(i);
-            TextView t = text("• " + p.optString("name") + (p.optBoolean("you") ? " (أنت)" : ""), 18, Color.WHITE, false);
-            t.setPadding(0, dp(4), 0, dp(4));
-            root.addView(t);
-        }
+    /** Host only: join and re-join requests with accept / reject buttons. */
+    private void requestsBox(JSONObject v) {
+        if (host == null) return;
         JSONArray rq = v.optJSONArray("requests");
-        if (isHost && rq != null && rq.length() > 0) {
+        if (rq != null && rq.length() > 0) {
             space(12);
             root.addView(text("طلبات الانضمام", 18, GOLD_LIGHT, true));
             for (int i = 0; i < rq.length(); i++) {
@@ -710,7 +801,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 line.setGravity(Gravity.CENTER_VERTICAL);
                 line.setPadding(dp(10), dp(8), dp(10), dp(8));
                 line.setBackground(rounded(PANEL, GOLD, 12));
-                line.addView(text(r.optString("label") + " يريد الانضمام", 16, INK, true),
+                line.addView(text(r.optString("label") + (r.optBoolean("rejoin") ? " يريد العودة إلى اللعبة" : " يريد الانضمام"), 16, INK, true),
                              narrow ? new LinearLayout.LayoutParams(-1, -2) : weight());
                 Button ok = button("قبول", HERB, x -> { link.accept(id); host.removeRequest(id); });
                 ok.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
@@ -727,6 +818,22 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 root.addView(line, lp);
             }
         }
+    }
+
+    private void renderLobby(JSONObject v, boolean isHost) {
+        header(isHost ? "غرفتك جاهزة" : "في الغرفة");
+        root.addView(text(isHost ? "اطلب من اللاعبين الضغط على «الانضمام إلى غرفة قريبة»." : "بانتظار أن يبدأ المضيف اللعبة…", 15, MUTED, false));
+        space(12);
+        JSONArray ps = v.optJSONArray("players");
+        int n = ps == null ? 0 : ps.length();
+        root.addView(text("اللاعبون (" + n + " من 6)", 18, GOLD_LIGHT, true));
+        for (int i = 0; i < n; i++) {
+            JSONObject p = ps.optJSONObject(i);
+            TextView t = text("• " + p.optString("name") + (p.optBoolean("you") ? " (أنت)" : ""), 18, Color.WHITE, false);
+            t.setPadding(0, dp(4), 0, dp(4));
+            root.addView(t);
+        }
+        requestsBox(v);
         space(16);
         if (isHost) {
             if (n == 2) {
@@ -923,6 +1030,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         for (int i = 0; ps != null && i < ps.length(); i++) {
             JSONObject p = ps.optJSONObject(i);
             sb.append(i > 0 ? "   " : "").append(p.optBoolean("alive") ? "● " : "○ ").append(p.optString("name"));
+            if (p.optBoolean("offline")) sb.append(" (انقطع)");
             if (p.optInt("roomCrowns") > 0) sb.append(" · تيجان الغرفة ").append(p.optInt("roomCrowns"));
         }
         TextView t = text(sb.toString(), 13, MUTED, false);
@@ -939,6 +1047,12 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         TextView t = text(title, 22, GOLD_LIGHT, true);
         t.setPadding(dp(10), 0, dp(10), 0);
         h.addView(t, weight());
+        Button help = button("؟", HIDE, x -> showRules());
+        help.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 20 * fontUi);
+        help.setMinHeight(dp(44));
+        help.setMinWidth(dp(44));
+        help.setPadding(0, 0, 0, 0);
+        h.addView(help, new LinearLayout.LayoutParams(dp(46), dp(46)));
         root.addView(h);
         space(10);
     }
@@ -1051,5 +1165,142 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             l.addView(b, weight());
         }
         return l;
+    }
+
+    // ================================================================ encyclopedia, rules, tutorial
+
+    private JSONObject animalJson(Cards.Animal a) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("key", a.key);
+            o.put("name", a.name);
+            o.put("power", a.power);
+            o.put("pred", a.predator);
+            o.put("abilityName", a.abilityName);
+            o.put("abilityText", a.abilityText);
+        } catch (JSONException ignored) { }
+        return o;
+    }
+
+    /** Where the back button of an info screen returns to. */
+    private void backFromInfo() {
+        if (lastView != null && (host != null || hostEndpoint != null)) render(lastView);
+        else if (searching) showSearch("اختر الغرفة التي تريد الانضمام إليها:");
+        else showHome();
+    }
+
+    private void showEncyclopedia() {
+        root.removeAllViews();
+        header("موسوعة الغابة");
+        root.addView(text("26 حيواناً من الأقوى إلى الأضعف، مع قدرة كل حيوان في اللعبة ومعلومة حقيقية عنه.", 14, MUTED, false));
+        space(8);
+        root.addView(button("رجوع", Color.DKGRAY, x -> backFromInfo()));
+        for (Cards.Animal a : Cards.ANIMALS) {
+            JSONObject j = animalJson(a);
+            LinearLayout box = new LinearLayout(this);
+            box.setOrientation(LinearLayout.VERTICAL);
+            box.setPadding(dp(10), dp(10), dp(10), dp(10));
+            box.setBackground(rounded(a.predator ? PRED_DARK : HERB_DARK, GOLD, 14));
+            LinearLayout top = row();
+            top.setGravity(Gravity.CENTER_VERTICAL);
+            top.addView(animalPic(j, 76), new LinearLayout.LayoutParams(dp(76), dp(76)));
+            LinearLayout mid = new LinearLayout(this);
+            mid.setOrientation(LinearLayout.VERTICAL);
+            mid.setPadding(dp(10), 0, dp(10), 0);
+            mid.addView(text(a.name, 20, Color.WHITE, true));
+            mid.addView(text("القوة " + a.power + " · " + a.typeName(), 14, GOLD_LIGHT, true));
+            top.addView(mid, weight());
+            box.addView(top);
+            LinearLayout ab = new LinearLayout(this);
+            ab.setOrientation(LinearLayout.VERTICAL);
+            ab.setPadding(dp(10), dp(6), dp(10), dp(8));
+            ab.setBackground(rounded(PANEL, PANEL, 10));
+            ab.addView(text("في اللعبة: " + a.abilityName, 15, a.predator ? PRED : HERB, true));
+            ab.addView(text(a.abilityText, 14, INK, false));
+            ab.addView(text("هل تعلم؟", 15, Color.parseColor("#6B4E1E"), true));
+            ab.addView(text(Cards.fact(a.key), 14, INK, false));
+            LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, -2);
+            ap.topMargin = dp(8);
+            box.addView(ab, ap);
+            space(10);
+            root.addView(box);
+        }
+        space(12);
+        root.addView(button("رجوع", Color.DKGRAY, x -> backFromInfo()));
+    }
+
+    static final String RULES =
+        "الهدف\nأن تكون ملك الغابة بعد 3 جولات.\n\n"
+      + "كل جولة\n"
+      + "1. تُكشف بيئة وحدث.\n"
+      + "2. يرى كل لاعب حيوانين ويختار واحداً سراً.\n"
+      + "3. الزرافة ترى حيوان لاعب، والثعلب يبادل حيوانه.\n"
+      + "4. يختار كل لاعب: هجوم على لاعب أو اختباء. وأرواح الغابة تمنح +2.\n"
+      + "5. تُكشف الحيوانات: الفهد قد يغيّر قراره، والحمار الوحشي يلغي صيد مفترس.\n"
+      + "6. تُحسب النقاط ويُقصى الأقل.\n\n"
+      + "حساب النقاط\n"
+      + "• القوة من 1 إلى 26.\n"
+      + "• الصيد: +3 للمفترس عن كل فريسة أضعف منه.\n"
+      + "• الفريسة: −2 إن وُجد مفترس أقوى.\n"
+      + "• القطيع: +2 لغير المفترس إن كان معه غير مفترس آخر.\n"
+      + "• البيئة والحدث والقدرات الخاصة.\n"
+      + "• رشاقة الصغار: +3 للحيوانات من 1 إلى 8 إذا كافأتها البيئة.\n"
+      + "• الهجوم: +5 إن تفوّقت على خصمك، وإلا −3.\n"
+      + "• الاختباء: تتجاهل الخصومات وتخسر مكافأتي الصيد والقطيع.\n\n"
+      + "الإقصاء\n"
+      + "3 لاعبين: لا أحد ثم 1 · 4: 1 ثم 1 · 5: 2 ثم 1 · 6: 2 ثم 2. الجولة الثالثة نهائي.\n"
+      + "حماية وحيد القرن والغزالة تعمل مرة واحدة في اللعبة.\n\n"
+      + "لاعبان\n"
+      + "الوضع العادي: الأعلى في كل جولة يأخذ تاجاً، وأول من يجمع تاجين يفوز.\n"
+      + "وضع المبارزة: اختيار 6 حيوانات بالتناوب (1-2-2-1)، ترتيب سري، ضربة قوية +4 على مبارزة واحدة، و3 مبارزات لكل منها بيئة وحدث عشوائيان. من يفوز بمبارزتين يأخذ تاجاً.\n\n"
+      + "الانقطاع\n"
+      + "إذا انقطع اتصالك يبقى مكانك محفوظاً، واضغط «إعادة الاتصال» للعودة إلى نفس اللعبة.";
+
+    private void showRules() {
+        if (isFinishing()) return;
+        new AlertDialog.Builder(this)
+            .setTitle("قواعد صراع الغابة")
+            .setMessage(RULES)
+            .setPositiveButton("حسناً", null)
+            .show();
+    }
+
+    private static final String[][] TUTORIAL = {
+        {"مرحباً في صراع الغابة", "لعبة من 2 إلى 6 لاعبين، كل لاعب على جواله في نفس المكان. تستمر اللعبة 3 جولات، والفائز يُتوَّج «ملك الغابة».", "lion"},
+        {"حيوانك", "في كل جولة ترى حيوانين وتختار واحداً سراً. لكل حيوان قوة من 1 إلى 26، وقدرة خاصة مكتوبة على بطاقته.", "elephant"},
+        {"المفترس والفريسة", "المفترس يأخذ +3 عن كل فريسة أضعف منه في الساحة. والفريسة تخسر 2 إن وُجد مفترس أقوى منها. لكن غير المفترسين يحمون بعضهم: +2 حماية القطيع.", "cheetah"},
+        {"البيئة والحدث", "لكل جولة بيئة تكافئ حيوانات معيّنة، مثل النهر للتمساح وفرس النهر. وحدث مفاجئ قد يقلب كل شيء، مثل الكسوف الذي يجعل الضعيف قوياً.", "croc"},
+        {"قرارك السري", "هجوم على لاعب تختاره: +5 إن تفوّقت عليه، وإلا −3. أو اختباء: تتجاهل كل الخصومات، لكنك تخسر مكافأتي الصيد والقطيع.", "wolf"},
+        {"الإقصاء وأرواح الغابة", "الأقل نقاطاً يخرج حسب عدد اللاعبين. ومن يخرج لا يجلس متفرجاً: يصبح «روح الغابة» ويمنح +2 لمن يشاء في كل جولة.", "deer"},
+        {"وضع المبارزة", "للاعبَين فقط: تختاران 6 حيوانات بالتناوب، ثم ترتّب حيواناتك سراً وتضع ضربة قوية +4 على مبارزة واحدة. من يفوز بمبارزتين يأخذ تاجاً.", "gazelle"},
+        {"أنت جاهز!", "أنشئ غرفة أو انضم إلى غرفة قريبة. تجد القواعد دائماً في زر ؟، وتعرّف على كل الحيوانات في «موسوعة الغابة».", "owl"}
+    };
+
+    private void showTutorial(int i) {
+        root.removeAllViews();
+        header("جولة تعليمية " + (i + 1) + " من " + TUTORIAL.length);
+        String[] step = TUTORIAL[i];
+        Cards.Animal a = Cards.animal(step[2]);
+        if (a != null) {
+            int size = Math.min(dp(170), (int) (screenWidthPx() * 0.45f));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
+            lp.gravity = Gravity.CENTER_HORIZONTAL;
+            root.addView(animalPic(animalJson(a), 170), lp);
+            space(12);
+        }
+        root.addView(infoBox(step[0], step[1]));
+        space(16);
+        if (i < TUTORIAL.length - 1) {
+            root.addView(button("التالي", HERB, x -> showTutorial(i + 1)));
+            space(8);
+        } else {
+            root.addView(button("لنبدأ اللعب", ATTACK, x -> backFromInfo()));
+            space(8);
+        }
+        if (i > 0) {
+            root.addView(button("السابق", Color.DKGRAY, x -> showTutorial(i - 1)));
+            space(8);
+        }
+        if (i < TUTORIAL.length - 1) root.addView(button("تخطّي", Color.DKGRAY, x -> backFromInfo()));
     }
 }

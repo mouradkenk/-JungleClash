@@ -36,6 +36,12 @@ public class HostController {
     private DuelGame duel;
     private final Map<String, Integer> roomCrowns = new HashMap<>(); // games won in this room
     private final Map<String, String> requests = new LinkedHashMap<>(); // join requests waiting for the host
+    private final java.util.Set<String> rejoinRequests = new java.util.HashSet<>();
+    // Reconnect: a player keeps their id; the phone connection (endpoint) may change.
+    private final Map<String, String> endpointOf = new HashMap<>(); // playerId -> endpoint
+    private final Map<String, String> playerOf = new HashMap<>();   // endpoint -> playerId
+    private final java.util.Set<String> offline = new java.util.HashSet<>();
+    private boolean settling;
 
     public HostController(Sender sender) { this.sender = sender; }
 
@@ -51,17 +57,49 @@ public class HostController {
 
     /** A phone asked to join. Returns false if it must be refused right away. */
     public boolean addRequest(String id, String name) {
+        String clean = name == null || name.trim().isEmpty() ? "لاعب" : name.trim();
+        if (!phase.equals("lobby")) {
+            if (offlinePlayerNamed(clean) == null) return false;
+            requests.put(id, clean);
+            rejoinRequests.add(id);
+            broadcast();
+            return true;
+        }
         if (!acceptsPlayers() || engine.players.size() + requests.size() >= MAX_PLAYERS + 2) return false;
-        requests.put(id, name == null || name.trim().isEmpty() ? "لاعب" : name.trim());
+        requests.put(id, clean);
         broadcast();
         return true;
     }
 
     public void removeRequest(String id) {
+        rejoinRequests.remove(id);
         if (requests.remove(id) != null) broadcast();
     }
 
+    /** The player behind a phone connection (changes after a reconnect). */
+    public String playerFor(String endpoint) {
+        String p = playerOf.get(endpoint);
+        return p == null ? endpoint : p;
+    }
+
+    private GameEngine.Player offlinePlayerNamed(String name) {
+        for (GameEngine.Player p : engine.players) if (offline.contains(p.id) && p.name.equals(name)) return p;
+        return null;
+    }
+
     public void onHello(String id, String name) {
+        if (!phase.equals("lobby")) {
+            GameEngine.Player back = offlinePlayerNamed(name == null ? "" : name.trim());
+            if (back == null) return;
+            String old = endpointOf.get(back.id);
+            if (old != null) playerOf.remove(old);
+            endpointOf.put(back.id, id);
+            playerOf.put(id, back.id);
+            offline.remove(back.id);
+            note(back.id, "عدت إلى اللعبة. أهلاً بعودتك!");
+            broadcast();
+            return;
+        }
         if (!acceptsPlayers() || engine.byId(id) != null) return;
         String clean = name == null || name.trim().isEmpty() ? "لاعب " + (engine.players.size() + 1) : name.trim();
         if (clean.length() > 20) clean = clean.substring(0, 20);
@@ -69,18 +107,36 @@ public class HostController {
         broadcast();
     }
 
-    public void onDisconnected(String id) {
+    public void onDisconnected(String endpoint) {
+        String id = playerFor(endpoint);
         GameEngine.Player p = engine.byId(id);
         if (p == null) return;
         if (phase.equals("lobby")) {
             engine.players.remove(p);
         } else {
-            // Play the absent player safely: hide, no vote, skip abilities.
-            String kind = pending.get(id);
-            if (kind != null && mode.equals("duel")) autoDuel(id);
-            else if (kind != null) applyDefault(id, kind);
+            // The player stays in the game and is played safely until they reconnect.
+            offline.add(id);
         }
         broadcast();
+    }
+
+    /** Answers pending choices of disconnected players: hide, no vote, skip abilities. */
+    private boolean settleOffline() {
+        boolean changed = false;
+        settling = true;
+        try {
+            for (int guard = 0; guard < 60; guard++) {
+                String who = null;
+                for (String pid : pending.keySet()) if (offline.contains(pid)) { who = pid; break; }
+                if (who == null) break;
+                changed = true;
+                if (mode.equals("duel")) autoDuel(who);
+                else applyDefault(who, pending.get(who));
+            }
+        } finally {
+            settling = false;
+        }
+        return changed;
     }
 
     public void startGame(String wanted) {
@@ -347,9 +403,16 @@ public class HostController {
     // ---------------------------------------------------------------- views
 
     public void broadcast() {
+        if (!settling && settleOffline()) {
+            broadcast(); // state moved on while settling: send the final views
+            return;
+        }
+        if (settling) return;
         for (GameEngine.Player p : engine.players) {
+            if (offline.contains(p.id)) continue;
+            String to = endpointOf.containsKey(p.id) ? endpointOf.get(p.id) : p.id;
             try {
-                sender.send(p.id, viewFor(p.id).toString());
+                sender.send(to, viewFor(p.id).toString());
             } catch (JSONException ignored) { }
         }
     }
@@ -391,6 +454,7 @@ public class HostController {
             o.put("crowns", p.crowns);
             o.put("you", p.id.equals(id));
             o.put("waiting", pending.containsKey(p.id));
+            o.put("offline", offline.contains(p.id));
             Integer rc = roomCrowns.get(p.id);
             o.put("roomCrowns", rc == null ? 0 : rc);
             if (duel != null && duel.indexOf(p.id) >= 0) o.put("crowns", duel.sides[duel.indexOf(p.id)].crowns);
@@ -398,9 +462,13 @@ public class HostController {
         }
         v.put("players", ps);
         v.put("mode", mode);
-        if (LOCAL_ID.equals(id) && phase.equals("lobby")) {
+        if (LOCAL_ID.equals(id)) {
             JSONArray rq = new JSONArray();
-            for (Map.Entry<String, String> e : requests.entrySet()) rq.put(option(e.getKey(), e.getValue()));
+            for (Map.Entry<String, String> e : requests.entrySet()) {
+                JSONObject o = option(e.getKey(), e.getValue());
+                o.put("rejoin", rejoinRequests.contains(e.getKey()));
+                rq.put(o);
+            }
             v.put("requests", rq);
         }
         v.put("canDuel", engine.players.size() == 2);
