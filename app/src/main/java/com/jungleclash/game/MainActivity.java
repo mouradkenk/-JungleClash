@@ -239,6 +239,11 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             if (!saveName(name)) return;
             withPermissions(this::startSearching);
         }));
+        space(10);
+        root.addView(button(T("العب وحدك ضد الكمبيوتر"), EVENT, v -> {
+            if (!saveName(name)) return;
+            showSolo();
+        }));
         space(14);
         root.addView(text(T("اللعب عبر الإنترنت"), 17, GOLD_LIGHT, true));
         space(6);
@@ -287,6 +292,52 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         link.setGate(null);
         link.startSearching();
         showSearch(T("ابحث عن غرفة قريبة…"));
+    }
+
+    // ================================================================ solo play
+
+    private int soloCount = 2;
+    private boolean soloHard;
+
+    private void showSolo() {
+        current = this::showSolo;
+        root.removeAllViews();
+        header(T("العب وحدك"));
+        root.addView(text(T("خصوم الكمبيوتر يلعبون فوراً، وأنت المضيف: تتحكم في بدء الجولات وكشف المبارزات."), 14, MUTED, false));
+        space(12);
+        root.addView(text(T("عدد الخصوم"), 17, GOLD_LIGHT, true));
+        space(6);
+        LinearLayout counts = row();
+        for (int i = 1; i <= 5; i++) {
+            final int n = i;
+            Button b = button(String.valueOf(i), i == soloCount ? ATTACK : HIDE, x -> { soloCount = n; showSolo(); });
+            b.setPadding(0, dp(10), 0, dp(10));
+            counts.addView(b, weight());
+        }
+        root.addView(counts);
+        space(14);
+        root.addView(text(T("المستوى"), 17, GOLD_LIGHT, true));
+        space(6);
+        root.addView(pair(button(T("سهل"), soloHard ? HIDE : ATTACK, x -> { soloHard = false; showSolo(); }),
+                          button(T("صعب"), soloHard ? ATTACK : HIDE, x -> { soloHard = true; showSolo(); })));
+        space(18);
+        if (soloCount == 1) {
+            root.addView(button(T("ابدأ: وضع المبارزة (مقترح)"), HERB, x -> startSolo("duel")));
+            space(8);
+            root.addView(button(T("ابدأ: الوضع العادي"), HERB, x -> startSolo("normal")));
+        } else {
+            root.addView(button(T("ابدأ اللعب"), HERB, x -> startSolo("normal")));
+        }
+        space(10);
+        root.addView(button(T("رجوع"), Color.DKGRAY, x -> showHome()));
+    }
+
+    private void startSolo(String mode) {
+        current = null;
+        host = new HostController(this);
+        host.onHello(HostController.LOCAL_ID, myName, lang);
+        for (int i = 0; i < soloCount; i++) host.addBot(soloHard ? HostController.HARD : HostController.EASY);
+        host.startGame(mode);
     }
 
     // ================================================================ online play

@@ -267,6 +267,13 @@ public final class Lang {
         ui("قاعدة البيانات غير جاهزة. أنشئ Realtime Database في Firebase.", "The database isn't ready. Create a Realtime Database in Firebase.");
         ui("قاعدة البيانات ترفض الدخول. حدّث قواعد Realtime Database في Firebase.", "The database refused access. Update the Realtime Database rules in Firebase.");
         ui("لا توجد غرفة بهذا الرمز.", "There's no room with this code.");
+        ui("العب وحدك ضد الكمبيوتر", "Play solo vs the computer");
+        ui("العب وحدك", "Solo play");
+        ui("عدد الخصوم", "Opponents");
+        ui("المستوى", "Level");
+        ui("سهل", "Easy");
+        ui("صعب", "Hard");
+        ui("خصوم الكمبيوتر يلعبون فوراً، وأنت المضيف: تتحكم في بدء الجولات وكشف المبارزات.", "Computer opponents play instantly. You are the host: you start rounds and reveal duels.");
         for (Cards.Animal a : Cards.ANIMALS) AR_NAME_TO_KEY.put(a.name, a.key);
         for (Cards.Env e : Cards.ENVS) AR_NAME_TO_KEY.put(e.name, "env:" + e.key);
     }

@@ -153,6 +153,151 @@ public class HostController {
         broadcast();
     }
 
+    // ---------------------------------------------------------------- computer players (solo play)
+
+    public static final int EASY = 1, HARD = 2;
+    private final Map<String, Integer> bots = new HashMap<>();
+    private final Random botRnd = new Random();
+
+    private static final String[] BOT_NAMES_AR = {"الصقر الذكي", "البومة اليقظة", "الذئب الجريء", "النمر الماكر", "الدب الحكيم"};
+    private static final String[] BOT_NAMES_EN = {"Clever Falcon", "Watchful Owl", "Bold Wolf", "Sly Tiger", "Wise Bear"};
+
+    /** Adds a computer player to the lobby (EASY or HARD). */
+    public boolean addBot(int level) {
+        if (!acceptsPlayers()) return false;
+        int n = bots.size();
+        String id = "bot" + (n + 1);
+        String[] names = Lang.EN.equals(langOf(LOCAL_ID)) ? BOT_NAMES_EN : BOT_NAMES_AR;
+        engine.addPlayer(id, names[n % names.length]);
+        bots.put(id, level == HARD ? HARD : EASY);
+        return true;
+    }
+
+    public boolean isBot(String id) { return bots.containsKey(id); }
+
+    private int effPower(Cards.Animal a) {
+        return engine.event != null && "eclipse".equals(engine.event.key) ? 27 - a.power : a.power;
+    }
+
+    /** Rough expected score of an animal this round (what a careful player would think). */
+    private int estimate(Cards.Animal a) {
+        int v = effPower(a);
+        String ev = engine.event == null ? "" : engine.event.key;
+        String env = engine.env == null ? "" : engine.env.key;
+        Integer fx = engine.env == null || ev.equals("fire") ? null : engine.env.effects.get(a.key);
+        int e = fx == null ? 0 : fx;
+        v += e;
+        if (a.predator) v += ev.equals("night") ? 6 : ev.equals("truce") ? 0 : 3;
+        else v += ev.equals("rain") ? 2 : 0;
+        if (a.key.equals("croc") && env.equals("river")) v += 5;
+        if (a.key.equals("owl") && (ev.equals("night") || ev.equals("eclipse"))) v += 5;
+        if (a.key.equals("ostrich") && (env.equals("savanna") || env.equals("desert"))) v += 3;
+        if (a.power <= 8 && e > 0) v += 3;
+        if (a.key.equals("lion")) v += 2;
+        if (a.key.equals("buffalo") || a.key.equals("hippo")) v += 2;
+        return v;
+    }
+
+    private GameEngine.Player randomOther(GameEngine.Player me) {
+        List<GameEngine.Player> l = new ArrayList<>();
+        for (GameEngine.Player p : engine.alive()) if (p != me) l.add(p);
+        return l.isEmpty() ? null : l.get(botRnd.nextInt(l.size()));
+    }
+
+    /** One move for a computer player. */
+    private void botMove(String id) {
+        boolean hard = bots.get(id) == HARD;
+        String kind = pending.get(id);
+        if (mode.equals("duel")) { botDuel(id, kind, hard); return; }
+        GameEngine.Player me = engine.byId(id);
+        String v = null;
+        switch (kind) {
+            case "pick": {
+                Cards.Animal best = me.hand.get(botRnd.nextInt(me.hand.size()));
+                if (hard) for (Cards.Animal a : me.hand) if (estimate(a) > estimate(best)) best = a;
+                v = best.key;
+                break;
+            }
+            case "giraffe": case "fox": {
+                GameEngine.Player t = randomOther(me);
+                v = t == null ? null : t.id;
+                break;
+            }
+            case "decision": {
+                GameEngine.Player t = randomOther(me);
+                if (t == null) { v = GameEngine.HIDE; break; }
+                if (!hard) { v = botRnd.nextBoolean() ? GameEngine.HIDE : "attack:" + t.id; break; }
+                int est = estimate(me.animal);
+                double p = Math.max(0, Math.min(1, (est - 6) / 26.0));
+                String ev = engine.event.key;
+                int hide = me.animal.key.equals("bear") ? 4 : 0;
+                if (me.animal.predator) hide -= ev.equals("night") ? 6 : 3;
+                if (ev.equals("hunter") && est >= 22) hide += 5;
+                if (ev.equals("fire")) hide -= 3;
+                v = 8 * p - 3 > hide ? "attack:" + t.id : GameEngine.HIDE;
+                break;
+            }
+            case "cheetah": {
+                if (!hard) { v = "keep"; break; }
+                GameEngine.Player target = null;
+                int mine = estimate(me.animal);
+                for (GameEngine.Player p : engine.alive()) {
+                    if (p == me || p.animal == null) continue;
+                    int gap = mine - estimate(p.animal);
+                    if (gap >= 3 && (target == null || estimate(p.animal) < estimate(target.animal))) target = p;
+                }
+                v = target != null ? "attack:" + target.id : "keep";
+                break;
+            }
+            case "zebra": {
+                GameEngine.Player best = null;
+                for (GameEngine.Player p : predators()) {
+                    if (p == me) continue;
+                    if (best == null || (hard ? effPower(p.animal) > effPower(best.animal) : botRnd.nextBoolean())) best = p;
+                }
+                v = best == null ? null : best.id;
+                break;
+            }
+            case "vote": {
+                List<GameEngine.Player> alive = engine.alive();
+                if (alive.isEmpty()) break;
+                GameEngine.Player pick = alive.get(botRnd.nextInt(alive.size()));
+                if (hard) for (GameEngine.Player p : alive) if (p.crowns < pick.crowns) pick = p;
+                v = pick.id;
+                break;
+            }
+            default:
+                break;
+        }
+        if (v == null) { applyDefault(id, kind); return; }
+        onChoice(id, kind, v);
+    }
+
+    private void botDuel(String id, String kind, boolean hard) {
+        DuelGame.Side me = duel.sides[duel.indexOf(id)];
+        String v;
+        if (kind.equals("draft")) {
+            List<Cards.Animal> free = new ArrayList<>();
+            for (Cards.Animal a : duel.market) if (!me.hand.contains(a)) free.add(a);
+            if (free.isEmpty()) return;
+            Cards.Animal best = free.get(botRnd.nextInt(free.size()));
+            if (hard) for (Cards.Animal a : free) if (a.power > best.power) best = a;
+            v = best.key;
+        } else if (kind.equals("place")) {
+            List<Cards.Animal> left = new ArrayList<>();
+            for (Cards.Animal a : me.hand) if (!me.order.contains(a)) left.add(a);
+            if (left.isEmpty()) return;
+            v = left.get(botRnd.nextInt(left.size())).key;
+        } else {
+            int idx = botRnd.nextInt(3);
+            if (hard) {   // strengthen the weakest animal: the strong ones should win on their own
+                for (int k = 0; k < me.order.size(); k++) if (me.order.get(k).power < me.order.get(idx).power) idx = k;
+            }
+            v = String.valueOf(idx);
+        }
+        onDuelChoice(id, kind, v);
+    }
+
     private String progress(String who) {
         String d = duel == null ? "" : duel.sides[0].hand.size() + "," + duel.sides[1].hand.size() + ","
                 + duel.sides[0].order.size() + "," + duel.sides[1].order.size() + "," + duel.duels.size();
@@ -166,11 +311,16 @@ public class HostController {
         try {
             for (int guard = 0; guard < 60; guard++) {
                 String who = null;
-                for (String pid : pending.keySet()) if (offline.contains(pid)) { who = pid; break; }
+                for (String pid : pending.keySet()) if (offline.contains(pid) || bots.containsKey(pid)) { who = pid; break; }
                 if (who == null) break;
                 String before = progress(who);
-                if (mode.equals("duel")) autoDuel(who);
+                if (bots.containsKey(who)) botMove(who);
+                else if (mode.equals("duel")) autoDuel(who);
                 else applyDefault(who, pending.get(who));
+                if (bots.containsKey(who) && before.equals(progress(who)) && pending.containsKey(who)) {
+                    // The bot's choice was refused: fall back to the safe default so the game never stalls.
+                    if (mode.equals("duel")) autoDuel(who); else applyDefault(who, pending.get(who));
+                }
                 String after = progress(who);
                 if (before.equals(after) && pending.containsKey(who)) break; // nothing more can be done for now
                 changed = true;
@@ -458,7 +608,7 @@ public class HostController {
         }
         if (settling) return;
         for (GameEngine.Player p : engine.players) {
-            if (offline.contains(p.id)) continue;
+            if (offline.contains(p.id) || bots.containsKey(p.id)) continue;
             String to = endpointOf.containsKey(p.id) ? endpointOf.get(p.id) : p.id;
             try {
                 sender.send(to, viewFor(p.id).toString());
