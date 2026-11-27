@@ -26,7 +26,7 @@ import java.util.Map;
  * Thin wrapper over Google Nearby Connections (Bluetooth + Wi-Fi Direct, no internet).
  * One host advertises, the other phones discover it and connect (P2P_STAR).
  */
-public class NearbyLink {
+public class NearbyLink implements Link {
 
     public static final String SERVICE_ID = "com.jungleclash.game.v1";
 

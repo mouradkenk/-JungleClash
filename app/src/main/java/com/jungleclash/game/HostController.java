@@ -3,6 +3,7 @@ package com.jungleclash.game;
 import com.jungleclash.game.engine.Cards;
 import com.jungleclash.game.engine.DuelGame;
 import com.jungleclash.game.engine.GameEngine;
+import com.jungleclash.game.engine.Lang;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -53,6 +54,26 @@ public class HostController {
 
     // ---------------------------------------------------------------- lobby
 
+    // ---------------------------------------------------------------- language
+
+    private final Map<String, String> langs = new HashMap<>();
+    /** Language of the view being built right now. */
+    private String L = Lang.AR;
+
+    private String tr(String ar) { return Lang.t(ar, L); }
+
+    public String langOf(String id) {
+        String l = langs.get(id);
+        return l == null ? Lang.AR : l;
+    }
+
+    /** A player switched the app language; resend their view in that language. */
+    public void setLang(String id, String lang) {
+        if (id == null) return;
+        langs.put(id, Lang.EN.equals(lang) ? Lang.EN : Lang.AR);
+        broadcast();
+    }
+
     // ---------------------------------------------------------------- join requests
 
     /** A phone asked to join. Returns false if it must be refused right away. */
@@ -90,6 +111,15 @@ public class HostController {
         return null;
     }
 
+    /** Hello with the phone's language, so its views are built in that language. */
+    public void onHello(String id, String name, String lang) {
+        String l = Lang.EN.equals(lang) ? Lang.EN : Lang.AR;
+        langs.put(id, l);
+        onHello(id, name);
+        String pid = playerFor(id);
+        if (pid != null && !pid.equals(id)) { langs.put(pid, l); broadcast(); }
+    }
+
     public void onHello(String id, String name) {
         if (!phase.equals("lobby")) {
             GameEngine.Player back = offlinePlayerNamed(name == null ? "" : name.trim());
@@ -99,7 +129,7 @@ public class HostController {
             endpointOf.put(back.id, id);
             playerOf.put(id, back.id);
             offline.remove(back.id);
-            note(back.id, "عدت إلى اللعبة. أهلاً بعودتك!");
+            note(back.id, Lang.t("عدت إلى اللعبة. أهلاً بعودتك!", langOf(back.id)));
             broadcast();
             return;
         }
@@ -123,6 +153,12 @@ public class HostController {
         broadcast();
     }
 
+    private String progress(String who) {
+        String d = duel == null ? "" : duel.sides[0].hand.size() + "," + duel.sides[1].hand.size() + ","
+                + duel.sides[0].order.size() + "," + duel.sides[1].order.size() + "," + duel.duels.size();
+        return pending.get(who) + "|" + pending.size() + "|" + phase + "|" + d;
+    }
+
     /** Answers pending choices of disconnected players: hide, no vote, skip abilities. */
     private boolean settleOffline() {
         boolean changed = false;
@@ -132,9 +168,12 @@ public class HostController {
                 String who = null;
                 for (String pid : pending.keySet()) if (offline.contains(pid)) { who = pid; break; }
                 if (who == null) break;
-                changed = true;
+                String before = progress(who);
                 if (mode.equals("duel")) autoDuel(who);
                 else applyDefault(who, pending.get(who));
+                String after = progress(who);
+                if (before.equals(after) && pending.containsKey(who)) break; // nothing more can be done for now
+                changed = true;
             }
         } finally {
             settling = false;
@@ -186,7 +225,7 @@ public class HostController {
         notes.clear();
         pending.clear();
         phase = "draft";
-        pending.put(duel.sides[duel.drafter()].id, "draft");
+        for (DuelGame.Side sd : duel.sides) pending.put(sd.id, "draft");
         broadcast();
     }
 
@@ -209,9 +248,8 @@ public class HostController {
         switch (kind) {
             case "draft":
                 if (!duel.draft(i, value)) return;
-                pending.remove(id);
-                if (duel.drafting()) pending.put(duel.sides[duel.drafter()].id, "draft");
-                else {
+                if (duel.draftDone(i)) pending.remove(id);
+                if (!duel.drafting()) {
                     phase = "arrange";
                     for (DuelGame.Side sd : duel.sides) pending.put(sd.id, "place");
                 }
@@ -253,7 +291,7 @@ public class HostController {
     private void startPre() {
         engine.afterPicks();
         if ("migration".equals(engine.event.key)) {
-            for (GameEngine.Player p : engine.alive()) note(p.id, "الهجرة: انتقل إليك حيوان جارك، وهو الآن: " + p.animal.name + ".");
+            for (GameEngine.Player p : engine.alive()) note(p.id, Lang.t("الهجرة: انتقل إليك حيوان جارك، وهو الآن: ", langOf(p.id)) + Lang.name(p.animal, langOf(p.id)) + ".");
         }
         phase = "pre";
         advancePre();
@@ -270,9 +308,12 @@ public class HostController {
             }
         }
         if ("footprints".equals(engine.event.key)) {
-            StringBuilder sb = new StringBuilder("آثار الأقدام:");
-            for (GameEngine.Player p : engine.alive()) sb.append("\n• ").append(p.name).append(": ").append(p.animal.typeName());
-            for (GameEngine.Player p : engine.players) note(p.id, sb.toString());
+            for (GameEngine.Player r : engine.players) {
+                String lg = langOf(r.id);
+                StringBuilder sb = new StringBuilder(Lang.t("آثار الأقدام:", lg));
+                for (GameEngine.Player p : engine.alive()) sb.append("\n• ").append(p.name).append(": ").append(Lang.typeName(p.animal, lg));
+                note(r.id, sb.toString());
+            }
         }
         phase = "decide";
         for (GameEngine.Player p : engine.alive()) pending.put(p.id, "decision");
@@ -316,13 +357,13 @@ public class HostController {
                 break;
             case "giraffe":
                 if (target == null || target == me || !target.alive) return;
-                note(id, "العين العالية: " + target.name + " لديه " + target.animal.name + " (" + target.animal.power + ").");
+                note(id, Lang.t("العين العالية: ", langOf(id)) + target.name + Lang.t(" لديه ", langOf(id)) + Lang.name(target.animal, langOf(id)) + " (" + target.animal.power + ").");
                 break;
             case "fox":
                 if (target == null || target == me || !target.alive) return;
                 engine.foxSwap(me, target);
-                note(id, "المكر: بدّلت حيوانك مع " + target.name + ". حيوانك الآن: " + me.animal.name + ".");
-                note(target.id, "الثعلب أخذ حيوانك! حيوانك الآن: " + target.animal.name + ".");
+                note(id, Lang.t("المكر: بدّلت حيوانك مع ", langOf(id)) + target.name + Lang.t(". حيوانك الآن: ", langOf(id)) + Lang.name(me.animal, langOf(id)) + ".");
+                note(target.id, Lang.t("الثعلب أخذ حيوانك! حيوانك الآن: ", langOf(target.id)) + Lang.name(target.animal, langOf(target.id)) + ".");
                 break;
             case "decision":
                 if (!applyDecision(me, value)) return;
@@ -350,10 +391,15 @@ public class HostController {
         int i = duel.indexOf(id);
         for (int guard = 0; guard < 12 && pending.containsKey(id); guard++) {
             String k = pending.get(id);
-            String v = k.equals("draft") ? duel.market.get(0).key
+            String v = k.equals("draft") ? firstUnpicked(duel.sides[i])
                      : k.equals("place") ? firstUnplaced(duel.sides[i]) : "0";
             onDuelChoice(id, k, v);
         }
+    }
+
+    private String firstUnpicked(DuelGame.Side s) {
+        for (Cards.Animal a : duel.market) if (!s.hand.contains(a)) return a.key;
+        return "";
     }
 
     private String firstUnplaced(DuelGame.Side s) {
@@ -423,11 +469,12 @@ public class HostController {
     private JSONObject animalJson(Cards.Animal a) throws JSONException {
         JSONObject o = new JSONObject();
         o.put("key", a.key);
-        o.put("name", a.name);
+        o.put("name", Lang.name(a, L));
         o.put("power", a.power);
         o.put("pred", a.predator);
-        o.put("abilityName", a.abilityName);
-        o.put("abilityText", a.abilityText);
+        o.put("abilityName", Lang.abilityName(a, L));
+        o.put("type", Lang.typeName(a, L));
+        o.put("abilityText", Lang.abilityText(a, L));
         return o;
     }
 
@@ -439,6 +486,7 @@ public class HostController {
     }
 
     public JSONObject viewFor(String id) throws JSONException {
+        L = langOf(id);
         GameEngine.Player me = engine.byId(id);
         JSONObject v = new JSONObject();
         v.put("t", "view");
@@ -478,17 +526,17 @@ public class HostController {
         if (phase.equals("lobby") || me == null) return v;
         if (mode.equals("duel")) return duelView(v, id);
 
-        v.put("envName", engine.env.name);
-        v.put("envText", engine.env.text);
-        v.put("eventName", engine.event.name);
-        v.put("eventText", engine.event.text);
+        v.put("envName", Lang.name(engine.env, L));
+        v.put("envText", Lang.text(engine.env, L));
+        v.put("eventName", Lang.name(engine.event, L));
+        v.put("eventText", Lang.text(engine.event, L));
         v.put("alive", me.alive);
         if (me.alive && me.animal != null) v.put("animal", animalJson(me.animal));
         if (me.alive) {
             String dec = GameEngine.HIDE.equals(me.decision) ? "hide" : "attack";
             v.put("decision", dec);
             GameEngine.Player t = me.attackTarget == null ? null : engine.byId(me.attackTarget);
-            v.put("decisionText", GameEngine.HIDE.equals(me.decision) ? "اختباء" : "هجوم على " + (t == null ? "" : t.name));
+            v.put("decisionText", GameEngine.HIDE.equals(me.decision) ? tr("اختباء") : tr("هجوم على ") + (t == null ? "" : t.name));
             if (phase.equals("choose")) {
                 JSONArray hand = new JSONArray();
                 for (Cards.Animal a : me.hand) hand.put(animalJson(a));
@@ -509,35 +557,35 @@ public class HostController {
             String title;
             switch (kind) {
                 case "pick":
-                    title = "اختر حيوانك لهذه الجولة";
-                    for (Cards.Animal a : me.hand) opts.put(option(a.key, "أختار " + a.name + " (" + a.power + ")"));
+                    title = tr("اختر حيوانك لهذه الجولة");
+                    for (Cards.Animal a : me.hand) opts.put(option(a.key, tr("أختار ") + Lang.name(a, L) + " (" + a.power + ")"));
                     break;
                 case "giraffe":
-                    title = "العين العالية: اختر لاعباً لترى حيوانه";
+                    title = tr("العين العالية: اختر لاعباً لترى حيوانه");
                     for (GameEngine.Player p : engine.alive()) if (p != me) opts.put(option(p.id, p.name));
                     break;
                 case "fox":
-                    title = "المكر: اختر لاعباً تبادل حيوانك معه";
+                    title = tr("المكر: اختر لاعباً تبادل حيوانك معه");
                     for (GameEngine.Player p : engine.alive()) if (p != me) opts.put(option(p.id, p.name));
                     break;
                 case "decision":
-                    title = "اختر قرارك سراً: هجوم على لاعب (+5 إن تفوّقت عليه، وإلا −3) أو اختباء";
-                    for (GameEngine.Player p : engine.alive()) if (p != me) opts.put(option("attack:" + p.id, "هجوم على " + p.name));
-                    opts.put(option(GameEngine.HIDE, "اختباء: تتجاهل الخصومات وتخسر مكافأتي الصيد والقطيع"));
+                    title = tr("اختر قرارك سراً: هجوم على لاعب (+5 إن تفوّقت عليه، وإلا −3) أو اختباء");
+                    for (GameEngine.Player p : engine.alive()) if (p != me) opts.put(option("attack:" + p.id, tr("هجوم على ") + p.name));
+                    opts.put(option(GameEngine.HIDE, tr("اختباء: تتجاهل الخصومات وتخسر مكافأتي الصيد والقطيع")));
                     break;
                 case "vote":
-                    title = "روح الغابة: امنح +2 لأحد اللاعبين";
+                    title = tr("روح الغابة: امنح +2 لأحد اللاعبين");
                     for (GameEngine.Player p : engine.alive()) opts.put(option(p.id, p.name));
                     break;
                 case "cheetah":
-                    title = "السرعة: رأيت كل الحيوانات. هل تغيّر قرارك؟";
-                    opts.put(option("keep", "أبقِ قراري كما هو"));
-                    for (GameEngine.Player p : engine.alive()) if (p != me) opts.put(option("attack:" + p.id, "هجوم على " + p.name));
-                    opts.put(option(GameEngine.HIDE, "اختباء"));
+                    title = tr("السرعة: رأيت كل الحيوانات. هل تغيّر قرارك؟");
+                    opts.put(option("keep", tr("أبقِ قراري كما هو")));
+                    for (GameEngine.Player p : engine.alive()) if (p != me) opts.put(option("attack:" + p.id, tr("هجوم على ") + p.name));
+                    opts.put(option(GameEngine.HIDE, tr("اختباء")));
                     break;
                 case "zebra":
-                    title = "الخطوط المربكة: اختر مفترساً يخسر مكافأة الصيد";
-                    for (GameEngine.Player p : predators()) opts.put(option(p.id, p.name + " (" + p.animal.name + ")"));
+                    title = tr("الخطوط المربكة: اختر مفترساً يخسر مكافأة الصيد");
+                    for (GameEngine.Player p : predators()) opts.put(option(p.id, p.name + " (" + Lang.name(p.animal, L) + ")"));
                     break;
                 default:
                     title = "";
@@ -561,7 +609,7 @@ public class HostController {
                 if (scored) {
                     r.put("decision", p.decision);
                     GameEngine.Player at = p.attackTarget == null ? null : engine.byId(p.attackTarget);
-                    r.put("decisionText", GameEngine.HIDE.equals(p.decision) ? "اختباء" : "هجوم على " + (at == null ? "" : at.name));
+                    r.put("decisionText", GameEngine.HIDE.equals(p.decision) ? tr("اختباء") : tr("هجوم على ") + (at == null ? "" : at.name));
                     r.put("total", p.total);
                     r.put("out", p.eliminatedThisRound);
                     r.put("won", p.wonRound);
@@ -569,7 +617,7 @@ public class HostController {
                     JSONArray parts = new JSONArray();
                     for (GameEngine.Part part : p.parts) {
                         JSONObject po = new JSONObject();
-                        po.put("label", part.label);
+                        po.put("label", Lang.label(part.label, L));
                         po.put("value", part.value);
                         po.put("ignored", part.ignored);
                         parts.put(po);
@@ -589,7 +637,7 @@ public class HostController {
         JSONArray arr = new JSONArray();
         for (GameEngine.Part part : parts) {
             JSONObject po = new JSONObject();
-            po.put("label", part.label);
+            po.put("label", Lang.label(part.label, L));
             po.put("value", part.value);
             po.put("ignored", part.ignored);
             arr.put(po);
@@ -609,13 +657,13 @@ public class HostController {
         JSONArray hand = new JSONArray();
         for (Cards.Animal a : mine.hand) hand.put(animalJson(a));
         v.put("hand", hand);
-        JSONArray opHand = new JSONArray();
-        for (Cards.Animal a : theirs.hand) opHand.put(animalJson(a));
+        JSONArray opHand = new JSONArray();   // secret until the duels are revealed
+        if (!phase.equals("draft") && !phase.equals("arrange")) for (Cards.Animal a : theirs.hand) opHand.put(animalJson(a));
         v.put("opHand", opHand);
         JSONArray market = new JSONArray();
         for (Cards.Animal a : duel.market) market.put(animalJson(a));
         v.put("market", market);
-        if (duel.drafting()) v.put("drafter", duel.sides[duel.drafter()].name);
+        v.put("opPicked", theirs.hand.size());
         JSONArray order = new JSONArray();
         for (Cards.Animal a : mine.order) order.put(animalJson(a));
         v.put("order", order);
@@ -628,16 +676,16 @@ public class HostController {
             JSONArray opts = new JSONArray();
             String title = "";
             if (kind.equals("draft")) {
-                title = "دورك: اختر حيواناً من الساحة";
-                for (Cards.Animal a : duel.market) opts.put(option(a.key, a.name + " (" + a.power + ")"));
+                title = tr("اختر 3 حيوانات سراً (اخترت ") + mine.hand.size() + tr(" من 3)");
+                for (Cards.Animal a : duel.market) if (!mine.hand.contains(a)) opts.put(option(a.key, Lang.name(a, L) + " (" + a.power + ")"));
             } else if (kind.equals("place")) {
                 int slot = mine.order.size() + 1;
-                title = "اختر الحيوان الذي يدخل المبارزة " + slot;
-                for (Cards.Animal a : mine.hand) if (!mine.order.contains(a)) opts.put(option(a.key, a.name + " (" + a.power + ")"));
+                title = tr("اختر الحيوان الذي يدخل المبارزة ") + slot;
+                for (Cards.Animal a : mine.hand) if (!mine.order.contains(a)) opts.put(option(a.key, Lang.name(a, L) + " (" + a.power + ")"));
             } else if (kind.equals("strike")) {
-                title = "ضع الضربة القوية (+" + DuelGame.STRIKE + ") على مبارزة واحدة";
+                title = tr("ضع الضربة القوية (+") + DuelGame.STRIKE + tr(") على مبارزة واحدة");
                 for (int i = 0; i < mine.order.size(); i++)
-                    opts.put(option(String.valueOf(i), "المبارزة " + (i + 1) + ": " + mine.order.get(i).name));
+                    opts.put(option(String.valueOf(i), tr("المبارزة ") + (i + 1) + ": " + Lang.name(mine.order.get(i), L)));
             }
             pr.put("title", title);
             pr.put("options", opts);
@@ -648,10 +696,10 @@ public class HostController {
         for (DuelGame.Duel d : duel.duels) {
             JSONObject o = new JSONObject();
             o.put("n", d.index + 1);
-            o.put("envName", d.env.name);
-            o.put("envText", d.env.text);
-            o.put("eventName", d.event.name);
-            o.put("eventText", d.event.text);
+            o.put("envName", Lang.name(d.env, L));
+            o.put("envText", Lang.text(d.env, L));
+            o.put("eventName", Lang.name(d.event, L));
+            o.put("eventText", Lang.text(d.event, L));
             JSONArray rows = new JSONArray();
             for (int k : new int[]{me, op}) {
                 JSONObject r = new JSONObject();
@@ -669,6 +717,7 @@ public class HostController {
         v.put("duels", ds);
         v.put("revealed", duel.duels.size());
         if (duel.roundWinner != null) v.put("roundWinner", duel.roundWinner.name);
+        v.put("roundDraw", duel.allRevealed() && duel.roundWinner == null);
         if (duel.winner != null) v.put("winner", duel.winner.name);
         return v;
     }

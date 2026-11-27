@@ -24,7 +24,10 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.jungleclash.game.engine.Cards;
+import com.jungleclash.game.engine.Lang;
+import com.jungleclash.game.net.Link;
 import com.jungleclash.game.net.NearbyLink;
+import com.jungleclash.game.net.OnlineLink;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -59,10 +62,17 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     private float ui = 1f;          // layout scale for this screen width
     private float fontUi = 1f;      // text scale (screen width × the phone's font setting, capped)
     private boolean narrow;         // small phones: stack side-by-side boxes
-    private NearbyLink link;
+    private Link link;              // the link in use: nearby or online
+    private NearbyLink nearby;
+    private boolean onlineMode;     // this game goes over the internet
+    private String roomCode;        // online room code
     private HostController host;          // only on the host phone
     private String hostEndpoint;          // only on player phones
     private String myName = "";
+    /** App language: Lang.AR or Lang.EN. */
+    private String lang = Lang.AR;
+    /** Redraws the current non-game screen (home, search, info), or null while a game view is shown. */
+    private Runnable current;
     private Runnable afterPermissions;
     private JSONObject lastView;
     private final Map<String, String> found = new LinkedHashMap<>();
@@ -80,15 +90,16 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        lang = getSharedPreferences("jc", MODE_PRIVATE).getString("lang", Lang.AR);
         computeScale();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        getWindow().getDecorView().setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        getWindow().getDecorView().setLayoutDirection(dir());
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(BG);
         scroll.setFillViewport(true);
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        root.setLayoutDirection(dir());
         root.setPadding(dp(14), dp(16), dp(14), dp(24));
         scroll.addView(root, new ScrollView.LayoutParams(-1, -2));
         // Keep everything clear of the status bar, notch and navigation bar (edge-to-edge phones).
@@ -98,7 +109,8 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             return insets;
         });
         setContentView(scroll);
-        link = new NearbyLink(this, this);
+        nearby = new NearbyLink(this, this);
+        link = nearby;
         SharedPreferences prefs = getSharedPreferences("jc", MODE_PRIVATE);
         myName = prefs.getString("name", "");
         if (!prefs.getBoolean("tutorialSeen", false)) {
@@ -119,9 +131,9 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     public void onBackPressed() {
         if (host == null && hostEndpoint == null && !searching) { super.onBackPressed(); return; }
         new AlertDialog.Builder(this)
-            .setMessage("هل تريد مغادرة اللعبة؟")
-            .setPositiveButton("مغادرة", (d, w) -> leave())
-            .setNegativeButton("إلغاء", null)
+            .setMessage(T("هل تريد مغادرة اللعبة؟"))
+            .setPositiveButton(T("مغادرة"), (d, w) -> leave())
+            .setNegativeButton(T("إلغاء"), null)
             .show();
     }
 
@@ -130,6 +142,9 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         lastJson = "";
         hostName = null;
         link.shutdown();
+        link = nearby;
+        onlineMode = false;
+        roomCode = null;
         host = null;
         hostEndpoint = null;
         searching = false;
@@ -171,30 +186,38 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             afterPermissions = null;
             r.run();
         } else {
-            toastDialog("اللعب بدون إنترنت يحتاج إذن البلوتوث والأجهزة القريبة والموقع. اسمح بها من إعدادات التطبيق ثم حاول مرة أخرى.");
+            toastDialog(T("اللعب بدون إنترنت يحتاج إذن البلوتوث والأجهزة القريبة والموقع. اسمح بها من إعدادات التطبيق ثم حاول مرة أخرى."));
         }
     }
 
     // ================================================================ home / lobby screens
 
     private void showHome() {
+        current = this::showHome;
         root.removeAllViews();
+        LinearLayout top = row();
+        top.setGravity(Gravity.END);
+        Button lb = button(Lang.en(lang) ? "العربية" : "English", Color.parseColor("#6B4E1E"), x -> toggleLang());
+        lb.setMinHeight(dp(40));
+        lb.setPadding(dp(14), dp(6), dp(14), dp(6));
+        top.addView(lb, new LinearLayout.LayoutParams(-2, -2));
+        root.addView(top);
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.drawable.logo);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(150), dp(150));
         lp.gravity = Gravity.CENTER_HORIZONTAL;
         lp.topMargin = dp(16);
         root.addView(logo, lp);
-        TextView title = text("صراع الغابة", 40, GOLD_LIGHT, true);
+        TextView title = text(T("صراع الغابة"), 40, GOLD_LIGHT, true);
         title.setGravity(Gravity.CENTER);
         root.addView(title);
-        TextView sub = text("لعبة القوة والدهاء · من 2 إلى 6 لاعبين · بدون إنترنت", 14, MUTED, false);
+        TextView sub = text(T("لعبة القوة والدهاء · من 2 إلى 6 لاعبين · بدون إنترنت"), 14, MUTED, false);
         sub.setGravity(Gravity.CENTER);
         root.addView(sub);
         space(24);
 
         EditText name = new EditText(this);
-        name.setHint("اكتب اسمك");
+        name.setHint(T("اكتب اسمك"));
         name.setText(myName);
         name.setSingleLine(true);
         name.setInputType(InputType.TYPE_CLASS_TEXT);
@@ -207,32 +230,43 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         root.addView(name, new LinearLayout.LayoutParams(-1, -2));
         space(16);
 
-        root.addView(button("إنشاء غرفة (أنا المضيف)", HERB, v -> {
+        root.addView(button(T("إنشاء غرفة (أنا المضيف)"), HERB, v -> {
             if (!saveName(name)) return;
             withPermissions(this::startHosting);
         }));
         space(10);
-        root.addView(button("الانضمام إلى غرفة قريبة", ATTACK, v -> {
+        root.addView(button(T("الانضمام إلى غرفة قريبة"), ATTACK, v -> {
             if (!saveName(name)) return;
             withPermissions(this::startSearching);
         }));
+        space(14);
+        root.addView(text(T("اللعب عبر الإنترنت"), 17, GOLD_LIGHT, true));
+        space(6);
+        root.addView(pair(button(T("إنشاء غرفة على الإنترنت"), HERB, v -> {
+                              if (!saveName(name)) return;
+                              startOnlineHosting();
+                          }),
+                          button(T("الانضمام برمز الغرفة"), ATTACK, v -> {
+                              if (!saveName(name)) return;
+                              showJoinCode();
+                          })));
         space(18);
-        LinearLayout extras = pair(button("موسوعة الغابة", EVENT, v -> showEncyclopedia()),
-                                   button("القواعد", HIDE, v -> showRules()));
+        LinearLayout extras = pair(button(T("موسوعة الغابة"), EVENT, v -> showEncyclopedia()),
+                                   button(T("القواعد"), HIDE, v -> showRules()));
         root.addView(extras);
         space(8);
-        root.addView(button("جولة تعليمية", Color.parseColor("#6B4E1E"), v -> showTutorial(0)));
+        root.addView(button(T("جولة تعليمية"), Color.parseColor("#6B4E1E"), v -> showTutorial(0)));
         space(18);
-        root.addView(infoBox("كيف تلعب",
-            "• شغّلوا البلوتوث والموقع (GPS) على كل الهواتف.\n"
-          + "• لاعب واحد ينشئ الغرفة، والباقون ينضمون إليها.\n"
-          + "• كل لاعب يرى حيوانه وقراره سراً على هاتفه.\n"
-          + "• 3 جولات، والأعلى نقاطاً في النهائي يُتوَّج ملك الغابة."));
+        root.addView(infoBox(T("كيف تلعب"),
+            T("• شغّلوا البلوتوث والموقع (GPS) على كل الهواتف.\n")
+          + T("• لاعب واحد ينشئ الغرفة، والباقون ينضمون إليها.\n")
+          + T("• كل لاعب يرى حيوانه وقراره سراً على هاتفه.\n")
+          + T("• 3 جولات، والأعلى نقاطاً في النهائي يُتوَّج ملك الغابة.")));
     }
 
     private boolean saveName(EditText e) {
         String n = e.getText().toString().trim();
-        if (n.isEmpty()) { e.setError("اكتب اسمك أولاً"); return false; }
+        if (n.isEmpty()) { e.setError(T("اكتب اسمك أولاً")); return false; }
         myName = n;
         getSharedPreferences("jc", MODE_PRIVATE).edit().putString("name", n).apply();
         return true;
@@ -244,7 +278,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             if (host == null || !host.addRequest(id, name)) link.reject(id);
         }));
         link.startHosting(myName);
-        host.onHello(HostController.LOCAL_ID, myName);
+        host.onHello(HostController.LOCAL_ID, myName, lang);
     }
 
     private void startSearching() {
@@ -252,47 +286,117 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         found.clear();
         link.setGate(null);
         link.startSearching();
-        showSearch("ابحث عن غرفة قريبة…");
+        showSearch(T("ابحث عن غرفة قريبة…"));
+    }
+
+    // ================================================================ online play
+
+    private String clientId() {
+        SharedPreferences p = getSharedPreferences("jc", MODE_PRIVATE);
+        String id = p.getString("cid", "");
+        if (id.isEmpty()) {
+            id = OnlineLink.newClientId();
+            p.edit().putString("cid", id).apply();
+        }
+        return id;
+    }
+
+    private OnlineLink useOnline() {
+        if (link != null && link != nearby) link.shutdown();
+        OnlineLink o = new OnlineLink(this, clientId());
+        link = o;
+        onlineMode = true;
+        return o;
+    }
+
+    private void startOnlineHosting() {
+        roomCode = null;
+        OnlineLink o = useOnline();
+        o.setRoomListener(c -> runOnUiThread(() -> {
+            roomCode = c;
+            if (lastView != null && current == null) { lastJson = null; render(lastView); }
+        }));
+        startHosting();
+    }
+
+    private void showJoinCode() {
+        current = this::showJoinCode;
+        root.removeAllViews();
+        header(T("الانضمام برمز الغرفة"));
+        root.addView(text(T("اكتب رمز الغرفة المكوّن من 4 أرقام"), 16, MUTED, false));
+        space(10);
+        EditText code = new EditText(this);
+        code.setInputType(InputType.TYPE_CLASS_NUMBER);
+        code.setSingleLine(true);
+        code.setTextColor(INK);
+        code.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 30 * fontUi);
+        code.setGravity(Gravity.CENTER);
+        code.setPadding(dp(12), dp(12), dp(12), dp(12));
+        code.setBackground(rounded(PANEL, GOLD, 12));
+        if (roomCode != null) code.setText(roomCode);
+        root.addView(code, new LinearLayout.LayoutParams(-1, -2));
+        space(14);
+        root.addView(button(T("انضم"), HERB, v -> {
+            String c = code.getText().toString().trim();
+            if (c.length() != 4) { code.setError(T("اكتب رمز الغرفة المكوّن من 4 أرقام")); return; }
+            joinOnline(c);
+        }));
+        space(10);
+        root.addView(button(T("رجوع"), Color.DKGRAY, v -> leave()));
+    }
+
+    private void joinOnline(String code) {
+        useOnline();
+        roomCode = code;
+        hostName = null;
+        searching = true;
+        found.clear();
+        link.setGate(null);
+        showSearch(T("أُرسل طلبك إلى غرفة ") + code + T(". بانتظار موافقة المضيف…"));
+        link.join(myName, code);
     }
 
     private void showReconnect() {
+        current = this::showReconnect;
         root.removeAllViews();
-        header("انقطع الاتصال");
-        root.addView(infoBox("لا تقلق", "مكانك في اللعبة محفوظ عند المضيف. ستُلعب اختياراتك بأمان (اختباء) حتى تعود."));
+        header(T("انقطع الاتصال"));
+        root.addView(infoBox(T("لا تقلق"), T("مكانك في اللعبة محفوظ عند المضيف. ستُلعب اختياراتك بأمان (اختباء) حتى تعود.")));
         space(14);
-        root.addView(button("إعادة الاتصال بغرفة " + (hostName == null ? "المضيف" : hostName), HERB, x -> {
+        root.addView(button(T("إعادة الاتصال بغرفة ") + (hostName == null ? T("المضيف") : hostName), HERB, x -> {
+            if (onlineMode && roomCode != null) { joinOnline(roomCode); return; }
             withPermissions(() -> {
                 searching = true;
                 found.clear();
                 autoJoin = hostName;
                 link.setGate(null);
                 link.startSearching();
-                showSearch("أبحث عن غرفة " + (hostName == null ? "المضيف" : hostName) + "…");
+                showSearch(T("أبحث عن غرفة ") + (hostName == null ? T("المضيف") : hostName) + "…");
             });
         }));
         space(10);
-        root.addView(button("مغادرة اللعبة", Color.DKGRAY, x -> leave()));
+        root.addView(button(T("مغادرة اللعبة"), Color.DKGRAY, x -> leave()));
     }
 
     private void showSearch(String status) {
+        current = () -> showSearch(status);
         root.removeAllViews();
-        header("الانضمام إلى غرفة");
+        header(T("الانضمام إلى غرفة"));
         root.addView(text(status, 16, MUTED, false));
         space(12);
-        if (found.isEmpty()) {
-            root.addView(text("لم تظهر غرف بعد. تأكد أن المضيف أنشأ الغرفة وأن البلوتوث يعمل.", 14, MUTED, false));
+        if (found.isEmpty() && !onlineMode) {
+            root.addView(text(T("لم تظهر غرف بعد. تأكد أن المضيف أنشأ الغرفة وأن البلوتوث يعمل."), 14, MUTED, false));
         }
         for (Map.Entry<String, String> e : found.entrySet()) {
             String id = e.getKey();
-            root.addView(button("غرفة " + e.getValue(), HERB, v -> {
+            root.addView(button(T("غرفة ") + e.getValue(), HERB, v -> {
                 hostName = e.getValue();
-                showSearch("أُرسل طلبك إلى غرفة " + e.getValue() + ". بانتظار موافقة المضيف…");
+                showSearch(T("أُرسل طلبك إلى غرفة ") + e.getValue() + T(". بانتظار موافقة المضيف…"));
                 link.join(myName, id);
             }));
             space(8);
         }
         space(16);
-        root.addView(button("رجوع", Color.DKGRAY, v -> leave()));
+        root.addView(button(T("رجوع"), Color.DKGRAY, v -> leave()));
     }
 
     // ================================================================ network callbacks
@@ -302,12 +406,12 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         runOnUiThread(() -> {
             found.put(endpointId, name);
             if (autoJoin != null && autoJoin.equals(name) && hostEndpoint == null) {
-                showSearch("وجدت غرفة " + name + ". جارٍ العودة إلى اللعبة…");
+                showSearch(T("وجدت غرفة ") + name + T(". جارٍ العودة إلى اللعبة…"));
                 link.join(myName, endpointId);
                 autoJoin = null;
                 return;
             }
-            if (searching && hostEndpoint == null) showSearch("اختر الغرفة التي تريد الانضمام إليها:");
+            if (searching && hostEndpoint == null) showSearch(T("اختر الغرفة التي تريد الانضمام إليها:"));
         });
     }
 
@@ -315,7 +419,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     public void onPeerLost(String endpointId) {
         runOnUiThread(() -> {
             found.remove(endpointId);
-            if (searching && hostEndpoint == null) showSearch("ابحث عن غرفة قريبة…");
+            if (searching && hostEndpoint == null) showSearch(T("ابحث عن غرفة قريبة…"));
         });
     }
 
@@ -330,9 +434,10 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             try {
                 hello.put("t", "hello");
                 hello.put("name", myName);
+                hello.put("lang", lang);
             } catch (JSONException ignored) { }
             link.send(endpointId, hello.toString());
-            showSearch("تم الاتصال! بانتظار المضيف…");
+            showSearch(T("تم الاتصال! بانتظار المضيف…"));
         });
     }
 
@@ -359,9 +464,10 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 String t = m.optString("t");
                 if (host != null) {
                     if (t.equals("hello")) {
-                        host.onHello(endpointId, m.optString("name"));
+                        host.onHello(endpointId, m.optString("name"), m.optString("lang", Lang.AR));
                         if (!host.phase().equals("lobby") && !host.hasOffline()) link.stopAdvertising();
                     }
+                    else if (t.equals("lang")) host.setLang(host.playerFor(endpointId), m.optString("lang"));
                     else if (t.equals("choice")) host.onChoice(host.playerFor(endpointId), m.optString("kind"), m.optString("value"));
                 } else if (t.equals("view")) {
                     renderIfChanged(message);
@@ -371,14 +477,21 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     }
 
     @Override
-    public void onError(String message) { runOnUiThread(() -> toastDialog(message)); }
+    public void onError(String message) {
+        runOnUiThread(() -> {
+            if (onlineMode && host != null && roomCode == null) leave();               // the room couldn't be created
+            else if (onlineMode && host == null && hostEndpoint == null) showJoinCode();  // couldn't join
+            toastDialog(T(message));
+        });
+    }
 
     @Override
     public void onConnectFailed(String endpointId, boolean rejected) {
         runOnUiThread(() -> {
             if (host != null) { host.removeRequest(endpointId); return; }
-            toastDialog(rejected ? "رفض المضيف طلب الانضمام." : "تعذّر الاتصال بالغرفة. حاول مرة أخرى.");
-            if (searching) showSearch("اختر الغرفة التي تريد الانضمام إليها:");
+            toastDialog(rejected ? T("رفض المضيف طلب الانضمام.") : T("تعذّر الاتصال بالغرفة. حاول مرة أخرى."));
+            if (onlineMode) { String c = roomCode; leave(); roomCode = c; showJoinCode(); return; }
+            if (searching) showSearch(T("اختر الغرفة التي تريد الانضمام إليها:"));
         });
     }
 
@@ -425,6 +538,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
     private void render(JSONObject v) {
         lastView = v;
+        current = null;
         root.removeAllViews();
         String phase = v.optString("phase");
         boolean isHost = v.optBoolean("isHost");
@@ -434,12 +548,12 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
         // ---- header
         int round = v.optInt("round");
-        String rTitle = v.optBoolean("twoPlayer") ? "الجولة " + round
-                      : (v.optBoolean("finalRound") ? "الجولة " + round + " · النهائي" : "الجولة " + round);
+        String rTitle = v.optBoolean("twoPlayer") ? T("الجولة ") + round
+                      : (v.optBoolean("finalRound") ? T("الجولة ") + round + T(" · النهائي") : T("الجولة ") + round);
         header(rTitle);
         requestsBox(v);
-        root.addView(pair(chip("البيئة: " + v.optString("envName"), v.optString("envText"), HERB),
-                          chip("الحدث: " + v.optString("eventName"), v.optString("eventText"), EVENT)));
+        root.addView(pair(chip(T("البيئة: ") + v.optString("envName"), v.optString("envText"), HERB),
+                          chip(T("الحدث: ") + v.optString("eventName"), v.optString("eventText"), EVENT)));
         space(12);
 
         // ---- revealed animals / results come first so everyone sees them
@@ -453,12 +567,12 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             root.addView(animalCard(animal, true));
             if (!phase.equals("pre") && !phase.equals("decide")) {
                 space(6);
-                TextView d = text("قرارك: " + v.optString("decisionText"), 15, MUTED, true);
+                TextView d = text(T("قرارك: ") + v.optString("decisionText"), 15, MUTED, true);
                 d.setGravity(Gravity.CENTER);
                 root.addView(d);
             }
         } else {
-            root.addView(infoBox("أنت روح الغابة", "خرجت من المنافسة، لكنك تمنح +2 لأحد اللاعبين في كل جولة."));
+            root.addView(infoBox(T("أنت روح الغابة"), T("خرجت من المنافسة، لكنك تمنح +2 لأحد اللاعبين في كل جولة.")));
         }
         space(10);
 
@@ -467,7 +581,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         if (notes != null && notes.length() > 0) {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < notes.length(); i++) sb.append(i > 0 ? "\n" : "").append(notes.optString(i));
-            root.addView(infoBox("سرّي لك", sb.toString()));
+            root.addView(infoBox(T("سرّي لك"), sb.toString()));
             space(10);
         }
 
@@ -491,7 +605,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             ImageView logo = new ImageView(this);
             logo.setImageResource(R.drawable.logo);
             win.addView(logo, new LinearLayout.LayoutParams(dp(90), dp(90)));
-            TextView w = text("ملك الغابة: " + v.optString("winner"), 26, GOLD_LIGHT, true);
+            TextView w = text(T("ملك الغابة: ") + v.optString("winner"), 26, GOLD_LIGHT, true);
             w.setGravity(Gravity.CENTER);
             win.addView(w);
             root.addView(win);
@@ -499,12 +613,12 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
         if (isHost && (phase.equals("result") || phase.equals("over"))) {
             space(14);
-            if (phase.equals("result")) root.addView(button("الجولة التالية", HERB, x -> { answered.clear(); host.nextRound(); }));
+            if (phase.equals("result")) root.addView(button(T("الجولة التالية"), HERB, x -> { answered.clear(); host.nextRound(); }));
             else newGameButtons(v);
         } else if (phase.equals("result") || phase.equals("over")) {
             space(10);
             if (phase.equals("over")) { root.addView(roomBoard(v)); space(8); }
-            TextView t = text("بانتظار المضيف ليبدأ " + (phase.equals("over") ? "لعبة جديدة…" : "الجولة التالية…"), 14, MUTED, false);
+            TextView t = text(T("بانتظار المضيف ليبدأ ") + (phase.equals("over") ? T("لعبة جديدة…") : T("الجولة التالية…")), 14, MUTED, false);
             t.setGravity(Gravity.CENTER);
             root.addView(t);
         }
@@ -517,11 +631,11 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         root.addView(roomBoard(v));
         space(10);
         if (v.optBoolean("canDuel")) {
-            root.addView(button("لعبة جديدة: وضع المبارزة", ATTACK, x -> { answered.clear(); host.newGame("duel"); }));
+            root.addView(button(T("لعبة جديدة: وضع المبارزة"), ATTACK, x -> { answered.clear(); host.newGame("duel"); }));
             space(8);
-            root.addView(button("لعبة جديدة: الوضع العادي", HERB, x -> { answered.clear(); host.newGame("normal"); }));
+            root.addView(button(T("لعبة جديدة: الوضع العادي"), HERB, x -> { answered.clear(); host.newGame("normal"); }));
         } else {
-            root.addView(button("لعبة جديدة بنفس اللاعبين", HERB, x -> { answered.clear(); host.newGame("normal"); }));
+            root.addView(button(T("لعبة جديدة بنفس اللاعبين"), HERB, x -> { answered.clear(); host.newGame("normal"); }));
         }
     }
 
@@ -534,22 +648,22 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         list.sort((a, b) -> Integer.compare(b.optInt("roomCrowns"), a.optInt("roomCrowns")));
         for (JSONObject p : list)
             sb.append(sb.length() > 0 ? "\n" : "").append("• ").append(p.optString("name")).append(": ")
-              .append(p.optInt("roomCrowns")).append(p.optInt("roomCrowns") == 1 ? " تاج" : " تيجان");
-        return infoBox("تيجان الغرفة", sb.toString());
+              .append(p.optInt("roomCrowns")).append(p.optInt("roomCrowns") == 1 ? T(" تاج") : T(" تيجان"));
+        return infoBox(T("تيجان الغرفة"), sb.toString());
     }
 
     // ================================================================ duel mode (2 players)
 
     private void renderDuel(JSONObject v, boolean isHost) {
         String phase = v.optString("phase");
-        header("المبارزة · الجولة " + v.optInt("duelRound"));
+        header(T("المبارزة · الجولة ") + v.optInt("duelRound"));
         requestsBox(v);
-        String score = "أنت: " + v.optInt("myCrowns") + " تاج   ·   " + v.optString("opponent") + ": " + v.optInt("opCrowns") + " تاج";
+        String score = T("أنت: ") + v.optInt("myCrowns") + T(" تاج   ·   ") + v.optString("opponent") + ": " + v.optInt("opCrowns") + T(" تاج");
         TextView sc = text(score, 16, GOLD_LIGHT, true);
         sc.setGravity(Gravity.CENTER);
         root.addView(sc);
         if (v.optInt("revealed") > 0) {
-            TextView dw = text("المبارزات في هذه الجولة: أنت " + v.optInt("myDuels") + " – " + v.optInt("opDuels"), 14, MUTED, false);
+            TextView dw = text(T("المبارزات في هذه الجولة: أنت ") + v.optInt("myDuels") + " – " + v.optInt("opDuels"), 14, MUTED, false);
             dw.setGravity(Gravity.CENTER);
             root.addView(dw);
         }
@@ -559,29 +673,31 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         boolean canAnswer = prompt != null && !answered.contains(prompt.optString("kind") + "#" + v.optInt("duelRound") + "#" + v.optJSONArray("order").length() + "#" + v.optJSONArray("hand").length());
 
         if (phase.equals("draft")) {
-            root.addView(infoBox("اختيار الحيوانات بالتناوب", "الدور على: " + v.optString("drafter")
-                + "\nالترتيب: الأول يختار 1، ثم الثاني 2، ثم الأول 2، وتبقى الأخيرة للثاني."));
+            root.addView(infoBox(T("اختيار سري في نفس الوقت"), T("يختار كل لاعب 3 حيوانات من الستة سراً، ويمكن أن تختارا نفس الحيوان. لا أفضلية لأحد.")
+                + "\n" + v.optString("opponent") + T(" اختار ") + v.optInt("opPicked") + T(" من 3.")));
             space(8);
-            root.addView(text("في الساحة", 18, GOLD_LIGHT, true));
+            root.addView(text(T("في الساحة"), 18, GOLD_LIGHT, true));
             JSONArray market = v.optJSONArray("market");
+            JSONArray mineH = v.optJSONArray("hand");
             for (int i = 0; market != null && i < market.length(); i++) {
                 JSONObject a = market.optJSONObject(i);
                 String key = a.optString("key");
+                boolean taken = false;
+                for (int k = 0; mineH != null && k < mineH.length(); k++) if (mineH.optJSONObject(k).optString("key").equals(key)) taken = true;
                 space(6);
-                root.addView(compactAnimal(a, canAnswer ? "اختر" : null, canAnswer ? x -> duelChoose(v, "draft", key) : null));
+                boolean can = canAnswer && !taken;
+                root.addView(compactAnimal(a, taken ? "✓" : (can ? T("اختر") : null), can ? x -> duelChoose(v, "draft", key) : null));
             }
             space(10);
-            root.addView(text("حيواناتك", 16, GOLD_LIGHT, true));
+            root.addView(text(T("حيواناتك"), 16, GOLD_LIGHT, true));
             addCompactList(v.optJSONArray("hand"));
-            space(6);
-            root.addView(text("حيوانات " + v.optString("opponent"), 16, GOLD_LIGHT, true));
-            addCompactList(v.optJSONArray("opHand"));
+
         } else if (phase.equals("arrange")) {
-            root.addView(infoBox("رتّب حيواناتك سراً", "اختر من يدخل كل مبارزة، ثم ضع الضربة القوية (+4) على مبارزة واحدة. البيئة والحدث يُسحبان عشوائياً عند كشف كل مبارزة."));
+            root.addView(infoBox(T("رتّب حيواناتك سراً"), T("اختر من يدخل كل مبارزة، ثم ضع الضربة القوية (+4) على مبارزة واحدة. البيئة والحدث يُسحبان عشوائياً عند كشف كل مبارزة.")));
             space(8);
             JSONArray order = v.optJSONArray("order");
             for (int i = 0; order != null && i < order.length(); i++)
-                root.addView(text("المبارزة " + (i + 1) + ": " + order.optJSONObject(i).optString("name"), 16, Color.WHITE, true));
+                root.addView(text(T("المبارزة ") + (i + 1) + ": " + order.optJSONObject(i).optString("name"), 16, Color.WHITE, true));
             space(8);
             if (canAnswer) {
                 JSONObject pr = prompt;
@@ -597,7 +713,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                         if (placed) continue;
                         String key = a.optString("key");
                         space(6);
-                        root.addView(compactAnimal(a, "للمبارزة " + (order.length() + 1), x -> duelChoose(v, "place", key)));
+                        root.addView(compactAnimal(a, T("للمبارزة ") + (order.length() + 1), x -> duelChoose(v, "place", key)));
                     }
                 } else {
                     renderDuelPrompt(v, pr);
@@ -611,7 +727,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             for (int i = 0; order != null && i < order.length(); i++)
                 plan.append(i > 0 ? "   ·   " : "").append(i + 1).append(": ").append(order.optJSONObject(i).optString("name"))
                     .append(v.optInt("strike") == i ? " (+4)" : "");
-            TextView pl = text("خطتك:  " + plan, 14, MUTED, false);
+            TextView pl = text(T("خطتك:  ") + plan, 14, MUTED, false);
             pl.setGravity(Gravity.CENTER);
             root.addView(pl);
             JSONArray ds = v.optJSONArray("duels");
@@ -633,21 +749,21 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             }
             space(14);
             if (countingDown || revealed > shownDuels) {
-                TextView t = text("استعدّوا…", 16, MUTED, true);
+                TextView t = text(T("استعدّوا…"), 16, MUTED, true);
                 t.setGravity(Gravity.CENTER);
                 root.addView(t);
             } else if (phase.equals("duel")) {
                 int next = v.optInt("revealed") + 1;
-                if (isHost) root.addView(button("اكشف المبارزة " + next, ATTACK, x -> host.revealNextDuel()));
+                if (isHost) root.addView(button(T("اكشف المبارزة ") + next, ATTACK, x -> host.revealNextDuel()));
                 else {
-                    TextView t = text("بانتظار المضيف ليكشف المبارزة " + next + "…", 15, MUTED, false);
+                    TextView t = text(T("بانتظار المضيف ليكشف المبارزة ") + next + "…", 15, MUTED, false);
                     t.setGravity(Gravity.CENTER);
                     root.addView(t);
                 }
             } else if (phase.equals("result")) {
-                root.addView(infoBox("انتهت الجولة", v.optString("roundWinner") + " فاز بالجولة وأخذ تاجاً."));
+                root.addView(infoBox(T("انتهت الجولة"), v.optBoolean("roundDraw") ? T("تعادل في هذه الجولة، لا تاج لأحد.") : v.optString("roundWinner") + T(" فاز بالجولة وأخذ تاجاً.")));
                 space(10);
-                if (isHost) root.addView(button("الجولة التالية", HERB, x -> { answered.clear(); host.nextRound(); }));
+                if (isHost) root.addView(button(T("الجولة التالية"), HERB, x -> { answered.clear(); host.nextRound(); }));
             } else if (phase.equals("over")) {
                 LinearLayout win = new LinearLayout(this);
                 win.setOrientation(LinearLayout.VERTICAL);
@@ -657,7 +773,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 ImageView logo = new ImageView(this);
                 logo.setImageResource(R.drawable.logo);
                 win.addView(logo, new LinearLayout.LayoutParams(dp(90), dp(90)));
-                TextView w = text("ملك الغابة: " + v.optString("winner"), 26, GOLD_LIGHT, true);
+                TextView w = text(T("ملك الغابة: ") + v.optString("winner"), 26, GOLD_LIGHT, true);
                 w.setGravity(Gravity.CENTER);
                 win.addView(w);
                 root.addView(win);
@@ -707,7 +823,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         if (arena == null) return;
         boolean scored = v.optBoolean("scored");
         String key = v.optInt("round") + ":" + scored;
-        root.addView(text(scored ? "نتيجة الجولة" : "الحيوانات في الساحة", 20, GOLD_LIGHT, true));
+        root.addView(text(scored ? T("نتيجة الجولة") : T("الحيوانات في الساحة"), 20, GOLD_LIGHT, true));
         space(6);
         if (!key.equals(countedKey)) {
             if (!countingDown) startCountdownThen(() -> { countedKey = key; if (lastView != null) render(lastView); });
@@ -778,7 +894,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         mid.setOrientation(LinearLayout.VERTICAL);
         mid.setPadding(dp(10), 0, dp(10), 0);
         mid.addView(text(a.optString("name") + "  (" + a.optInt("power") + ")", 17, Color.WHITE, true));
-        mid.addView(text((pred ? "مفترس" : "غير مفترس") + " · " + a.optString("abilityName"), 13, MUTED, false));
+        mid.addView(text((pred ? T("مفترس") : T("غير مفترس")) + " · " + a.optString("abilityName"), 13, MUTED, false));
         box.addView(mid, weight());
         if (action != null) {
             Button b = button(action, pred ? PRED : HERB, onClick);
@@ -794,9 +910,9 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(10), dp(10), dp(10), dp(10));
         box.setBackground(rounded(Color.parseColor("#0B1C12"), GOLD, 14));
-        box.addView(text("المبارزة " + d.optInt("n"), 19, GOLD_LIGHT, true));
-        LinearLayout chips = pair(chip("البيئة: " + d.optString("envName"), d.optString("envText"), HERB),
-                                  chip("الحدث: " + d.optString("eventName"), d.optString("eventText"), EVENT));
+        box.addView(text(T("المبارزة ") + d.optInt("n"), 19, GOLD_LIGHT, true));
+        LinearLayout chips = pair(chip(T("البيئة: ") + d.optString("envName"), d.optString("envText"), HERB),
+                                  chip(T("الحدث: ") + d.optString("eventName"), d.optString("eventText"), EVENT));
         LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, -2);
         cp.topMargin = dp(6);
         box.addView(chips, cp);
@@ -804,7 +920,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         for (int i = 0; rows != null && i < rows.length(); i++) {
             JSONObject r = rows.optJSONObject(i);
             try {
-                r.put("decisionText", r.optBoolean("strike") ? "الضربة القوية" : "بدون ضربة");
+                r.put("decisionText", r.optBoolean("strike") ? T("الضربة القوية") : T("بدون ضربة"));
                 r.put("out", false);
             } catch (JSONException ignored) { }
             LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, -2);
@@ -820,7 +936,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         JSONArray rq = v.optJSONArray("requests");
         if (rq != null && rq.length() > 0) {
             space(12);
-            root.addView(text("طلبات الانضمام", 18, GOLD_LIGHT, true));
+            root.addView(text(T("طلبات الانضمام"), 18, GOLD_LIGHT, true));
             for (int i = 0; i < rq.length(); i++) {
                 JSONObject r = rq.optJSONObject(i);
                 String id = r.optString("id");
@@ -829,13 +945,13 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 line.setGravity(Gravity.CENTER_VERTICAL);
                 line.setPadding(dp(10), dp(8), dp(10), dp(8));
                 line.setBackground(rounded(PANEL, GOLD, 12));
-                line.addView(text(r.optString("label") + (r.optBoolean("rejoin") ? " يريد العودة إلى اللعبة" : " يريد الانضمام"), 16, INK, true),
+                line.addView(text(r.optString("label") + (r.optBoolean("rejoin") ? T(" يريد العودة إلى اللعبة") : T(" يريد الانضمام")), 16, INK, true),
                              narrow ? new LinearLayout.LayoutParams(-1, -2) : weight());
-                Button ok = button("قبول", HERB, x -> { link.accept(id); host.removeRequest(id); });
+                Button ok = button(T("قبول"), HERB, x -> { link.accept(id); host.removeRequest(id); });
                 ok.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
                 ok.setMinHeight(dp(44));
                 line.addView(ok);
-                Button no = button("رفض", PRED, x -> { link.reject(id); host.removeRequest(id); });
+                Button no = button(T("رفض"), PRED, x -> { link.reject(id); host.removeRequest(id); });
                 LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(-2, -2);
                 np.setMarginStart(dp(6));
                 no.setLayoutParams(np);
@@ -849,15 +965,30 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     }
 
     private void renderLobby(JSONObject v, boolean isHost) {
-        header(isHost ? "غرفتك جاهزة" : "في الغرفة");
-        root.addView(text(isHost ? "اطلب من اللاعبين الضغط على «الانضمام إلى غرفة قريبة»." : "بانتظار أن يبدأ المضيف اللعبة…", 15, MUTED, false));
+        header(isHost ? T("غرفتك جاهزة") : T("في الغرفة"));
+        if (onlineMode) {
+            LinearLayout box = new LinearLayout(this);
+            box.setOrientation(LinearLayout.VERTICAL);
+            box.setPadding(dp(12), dp(10), dp(12), dp(10));
+            box.setBackground(rounded(PANEL, GOLD, 14));
+            TextView cl = text(T("رمز الغرفة"), 15, INK, true);
+            cl.setGravity(Gravity.CENTER);
+            box.addView(cl);
+            TextView cv = text(roomCode == null ? T("جارٍ إنشاء الغرفة…") : roomCode, roomCode == null ? 18 : 44, HERB, true);
+            cv.setGravity(Gravity.CENTER);
+            box.addView(cv);
+            root.addView(box);
+            space(8);
+            if (isHost) root.addView(text(T("أعطِ هذا الرمز لأصدقائك ليضغطوا «الانضمام برمز الغرفة»."), 15, MUTED, false));
+        }
+        if (!(onlineMode && isHost)) root.addView(text(isHost ? T("اطلب من اللاعبين الضغط على «الانضمام إلى غرفة قريبة».") : T("بانتظار أن يبدأ المضيف اللعبة…"), 15, MUTED, false));
         space(12);
         JSONArray ps = v.optJSONArray("players");
         int n = ps == null ? 0 : ps.length();
-        root.addView(text("اللاعبون (" + n + " من 6)", 18, GOLD_LIGHT, true));
+        root.addView(text(T("اللاعبون (") + n + T(" من 6)"), 18, GOLD_LIGHT, true));
         for (int i = 0; i < n; i++) {
             JSONObject p = ps.optJSONObject(i);
-            TextView t = text("• " + p.optString("name") + (p.optBoolean("you") ? " (أنت)" : ""), 18, Color.WHITE, false);
+            TextView t = text("• " + p.optString("name") + (p.optBoolean("you") ? T(" (أنت)") : ""), 18, Color.WHITE, false);
             t.setPadding(0, dp(4), 0, dp(4));
             root.addView(t);
         }
@@ -865,16 +996,16 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         space(16);
         if (isHost) {
             if (n == 2) {
-                root.addView(infoBox("أسلوب اللعب", "مع لاعبَين ننصح بوضع «المبارزة»: تختاران 6 حيوانات بالتناوب، ثم 3 مبارزات تُسحب لكل منها بيئة وحدث عشوائيان."));
+                root.addView(infoBox(T("أسلوب اللعب"), T("مع لاعبَين ننصح بوضع «المبارزة»: يختار كل منكما 3 حيوانات سراً من 6 معروضة، ثم 3 مبارزات تُسحب لكل منها بيئة وحدث عشوائيان.")));
                 space(10);
-                root.addView(button("ابدأ: وضع المبارزة (مقترح)", ATTACK, x -> {
+                root.addView(button(T("ابدأ: وضع المبارزة (مقترح)"), ATTACK, x -> {
                     link.stopAdvertising();
                     answered.clear();
                     host.startGame("duel");
                 }));
                 space(8);
             }
-            Button start = button(n >= 2 ? (n == 2 ? "ابدأ: الوضع العادي" : "ابدأ اللعب") : "بانتظار لاعب واحد على الأقل…", HERB, x -> {
+            Button start = button(n >= 2 ? (n == 2 ? T("ابدأ: الوضع العادي") : T("ابدأ اللعب")) : T("بانتظار لاعب واحد على الأقل…"), HERB, x -> {
                 link.stopAdvertising();
                 answered.clear();
                 host.startGame("normal");
@@ -885,7 +1016,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             if (n >= 2) { space(10); root.addView(roomBoard(v)); }
         }
         space(10);
-        root.addView(button("مغادرة", Color.DKGRAY, x -> leave()));
+        root.addView(button(T("مغادرة"), Color.DKGRAY, x -> leave()));
     }
 
     private void renderPrompt(JSONObject prompt) {
@@ -909,17 +1040,17 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     }
 
     private void renderHand(JSONArray hand) {
-        TextView t = text("اختر حيوانك لهذه الجولة سراً", 20, GOLD_LIGHT, true);
+        TextView t = text(T("اختر حيوانك لهذه الجولة سراً"), 20, GOLD_LIGHT, true);
         t.setGravity(Gravity.CENTER);
         root.addView(t);
-        root.addView(text("الحيوان الآخر يعود إلى الكومة.", 14, MUTED, false));
+        root.addView(text(T("الحيوان الآخر يعود إلى الكومة."), 14, MUTED, false));
         for (int i = 0; hand != null && i < hand.length(); i++) {
             JSONObject a = hand.optJSONObject(i);
             space(10);
             root.addView(animalCard(a, true));
             space(6);
             String key = a.optString("key");
-            root.addView(button("أختار " + a.optString("name"), a.optBoolean("pred") ? PRED : HERB, x -> choose("pick", key)));
+            root.addView(button(T("أختار ") + a.optString("name"), a.optBoolean("pred") ? PRED : HERB, x -> choose("pick", key)));
         }
     }
 
@@ -928,9 +1059,9 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         StringBuilder names = new StringBuilder();
         for (int i = 0; ps != null && i < ps.length(); i++) {
             JSONObject p = ps.optJSONObject(i);
-            if (p.optBoolean("waiting")) names.append(names.length() > 0 ? "، " : "").append(p.optString("name"));
+            if (p.optBoolean("waiting")) names.append(names.length() > 0 ? T("، ") : "").append(p.optString("name"));
         }
-        return infoBox("انتظر قليلاً", names.length() > 0 ? "بانتظار: " + names : "جارٍ التحضير…");
+        return infoBox(T("انتظر قليلاً"), names.length() > 0 ? T("بانتظار: ") + names : T("جارٍ التحضير…"));
     }
 
     // ================================================================ widgets
@@ -981,7 +1112,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         int s = dp(big ? 40 : 32);
         top.addView(power, new LinearLayout.LayoutParams(s, s));
         col.addView(top);
-        TextView type = text(pred ? "مفترس" : "غير مفترس", 12, Color.WHITE, true);
+        TextView type = text(pred ? T("مفترس") : T("غير مفترس"), 12, Color.WHITE, true);
         type.setPadding(dp(10), dp(1), dp(10), dp(1));
         type.setBackground(rounded(pred ? PRED : HERB, GOLD, 30));
         LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-2, -2);
@@ -1011,11 +1142,11 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         LinearLayout mid = new LinearLayout(this);
         mid.setOrientation(LinearLayout.VERTICAL);
         mid.setPadding(dp(10), 0, dp(10), 0);
-        String status = r.optBoolean("out") ? " · خرج" : (r.optBoolean("won") ? " · الأعلى" : "");
+        String status = r.optBoolean("out") ? T(" · خرج") : (r.optBoolean("won") ? T(" · الأعلى") : "");
         mid.addView(text(r.optString("name") + status, 17, Color.WHITE, true));
         String dec = scored ? " · " + r.optString("decisionText") : "";
         mid.addView(text(a.optString("name") + " (" + a.optInt("power") + ")" + dec, 14, MUTED, false));
-        if (r.optInt("crowns") > 0) mid.addView(text("التيجان: " + r.optInt("crowns"), 13, GOLD_LIGHT, true));
+        if (r.optInt("crowns") > 0) mid.addView(text(T("التيجان: ") + r.optInt("crowns"), 13, GOLD_LIGHT, true));
         top.addView(mid, weight());
 
         if (scored) {
@@ -1033,7 +1164,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 // Isolate the number so Arabic text does not flip "-3" into "3-".
                 String sign = "\u2066" + (val > 0 ? "+" + val : val < 0 ? "−" + (-val) : "0") + "\u2069";
                 sb.append(i > 0 ? "  ·  " : "").append(p.optString("label")).append(" ").append(sign);
-                if (p.optBoolean("ignored")) sb.append(" (تجاهله الاختباء)");
+                if (p.optBoolean("ignored")) sb.append(T(" (تجاهله الاختباء)"));
             }
             TextView br = text(sb.toString(), 12, MUTED, false);
             br.setPadding(0, dp(6), 0, 0);
@@ -1048,8 +1179,8 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         for (int i = 0; ps != null && i < ps.length(); i++) {
             JSONObject p = ps.optJSONObject(i);
             sb.append(i > 0 ? "   " : "").append(p.optBoolean("alive") ? "● " : "○ ").append(p.optString("name"));
-            if (p.optBoolean("offline")) sb.append(" (انقطع)");
-            if (p.optInt("roomCrowns") > 0) sb.append(" · تيجان الغرفة ").append(p.optInt("roomCrowns"));
+            if (p.optBoolean("offline")) sb.append(T(" (انقطع)"));
+            if (p.optInt("roomCrowns") > 0) sb.append(T(" · تيجان الغرفة ")).append(p.optInt("roomCrowns"));
         }
         TextView t = text(sb.toString(), 13, MUTED, false);
         t.setGravity(Gravity.CENTER);
@@ -1065,12 +1196,15 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         TextView t = text(title, 22, GOLD_LIGHT, true);
         t.setPadding(dp(10), 0, dp(10), 0);
         h.addView(t, weight());
-        Button help = button("؟", HIDE, x -> showRules());
+        Button help = button(T("؟"), HIDE, x -> showRules());
         help.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 20 * fontUi);
         help.setMinHeight(dp(44));
         help.setMinWidth(dp(44));
         help.setPadding(0, 0, 0, 0);
         h.addView(help, new LinearLayout.LayoutParams(dp(46), dp(46)));
+        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(dp(46), dp(46));
+        lp2.setMarginStart(dp(6));
+        h.addView(langButton(), lp2);
         root.addView(h);
         space(10);
     }
@@ -1095,12 +1229,48 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         return c;
     }
 
+    // ================================================================ language
+
+    private String T(String ar) { return Lang.t(ar, lang); }
+
+    private int dir() { return Lang.en(lang) ? View.LAYOUT_DIRECTION_LTR : View.LAYOUT_DIRECTION_RTL; }
+
+    private Button langButton() {
+        Button b = button(Lang.en(lang) ? "ع" : "EN", Color.parseColor("#6B4E1E"), x -> toggleLang());
+        b.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15 * fontUi);
+        b.setMinHeight(dp(44));
+        b.setMinWidth(dp(44));
+        b.setPadding(0, 0, 0, 0);
+        return b;
+    }
+
+    /** Switch Arabic ⇄ English, remember it, and tell the host so this phone's views change language too. */
+    private void toggleLang() {
+        lang = Lang.en(lang) ? Lang.AR : Lang.EN;
+        getSharedPreferences("jc", MODE_PRIVATE).edit().putString("lang", lang).apply();
+        getWindow().getDecorView().setLayoutDirection(dir());
+        root.setLayoutDirection(dir());
+        Runnable again = current;
+        if (host != null) {
+            host.setLang(HostController.LOCAL_ID, lang);
+        } else if (hostEndpoint != null) {
+            JSONObject m = new JSONObject();
+            try {
+                m.put("t", "lang");
+                m.put("lang", lang);
+            } catch (JSONException ignored) { }
+            link.send(hostEndpoint, m.toString());
+        }
+        if (again != null) again.run();
+        else if (lastView != null) { lastJson = null; render(lastView); }
+    }
+
     private TextView text(String s, int sp, int color, boolean bold) {
         TextView t = new TextView(this);
         t.setText(s);
         t.setTextSize(TypedValue.COMPLEX_UNIT_DIP, sp * fontUi);
         t.setTextColor(color);
-        t.setTextDirection(View.TEXT_DIRECTION_RTL);
+        t.setTextDirection(Lang.en(lang) ? View.TEXT_DIRECTION_LTR : View.TEXT_DIRECTION_RTL);
         if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
         t.setLineSpacing(0, 1.15f);
         return t;
@@ -1124,7 +1294,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     private LinearLayout row() {
         LinearLayout r = new LinearLayout(this);
         r.setOrientation(LinearLayout.HORIZONTAL);
-        r.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        r.setLayoutDirection(dir());
         return r;
     }
 
@@ -1150,7 +1320,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
     private void toastDialog(String msg) {
         if (isFinishing()) return;
-        new AlertDialog.Builder(this).setMessage(msg).setPositiveButton("حسناً", null).show();
+        new AlertDialog.Builder(this).setMessage(msg).setPositiveButton(T("حسناً"), null).show();
     }
 
     /** Sizes follow the phone's screen width: a 392dp-wide phone is the reference. */
@@ -1192,11 +1362,11 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         JSONObject o = new JSONObject();
         try {
             o.put("key", a.key);
-            o.put("name", a.name);
+            o.put("name", Lang.name(a, lang));
             o.put("power", a.power);
             o.put("pred", a.predator);
-            o.put("abilityName", a.abilityName);
-            o.put("abilityText", a.abilityText);
+            o.put("abilityName", Lang.abilityName(a, lang));
+            o.put("abilityText", Lang.abilityText(a, lang));
         } catch (JSONException ignored) { }
         return o;
     }
@@ -1204,16 +1374,17 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     /** Where the back button of an info screen returns to. */
     private void backFromInfo() {
         if (lastView != null && (host != null || hostEndpoint != null)) render(lastView);
-        else if (searching) showSearch("اختر الغرفة التي تريد الانضمام إليها:");
+        else if (searching) showSearch(T("اختر الغرفة التي تريد الانضمام إليها:"));
         else showHome();
     }
 
     private void showEncyclopedia() {
+        current = this::showEncyclopedia;
         root.removeAllViews();
-        header("موسوعة الغابة");
-        root.addView(text("26 حيواناً من الأقوى إلى الأضعف، مع قدرة كل حيوان في اللعبة ومعلومة حقيقية عنه.", 14, MUTED, false));
+        header(T("موسوعة الغابة"));
+        root.addView(text(T("26 حيواناً من الأقوى إلى الأضعف، مع قدرة كل حيوان في اللعبة ومعلومة حقيقية عنه."), 14, MUTED, false));
         space(8);
-        root.addView(button("رجوع", Color.DKGRAY, x -> backFromInfo()));
+        root.addView(button(T("رجوع"), Color.DKGRAY, x -> backFromInfo()));
         for (Cards.Animal a : Cards.ANIMALS) {
             JSONObject j = animalJson(a);
             LinearLayout box = new LinearLayout(this);
@@ -1226,18 +1397,18 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             LinearLayout mid = new LinearLayout(this);
             mid.setOrientation(LinearLayout.VERTICAL);
             mid.setPadding(dp(10), 0, dp(10), 0);
-            mid.addView(text(a.name, 20, Color.WHITE, true));
-            mid.addView(text("القوة " + a.power + " · " + a.typeName(), 14, GOLD_LIGHT, true));
+            mid.addView(text(Lang.name(a, lang), 20, Color.WHITE, true));
+            mid.addView(text(T("القوة ") + a.power + " · " + Lang.typeName(a, lang), 14, GOLD_LIGHT, true));
             top.addView(mid, weight());
             box.addView(top);
             LinearLayout ab = new LinearLayout(this);
             ab.setOrientation(LinearLayout.VERTICAL);
             ab.setPadding(dp(10), dp(6), dp(10), dp(8));
             ab.setBackground(rounded(PANEL, PANEL, 10));
-            ab.addView(text("في اللعبة: " + a.abilityName, 15, a.predator ? PRED : HERB, true));
-            ab.addView(text(a.abilityText, 14, INK, false));
-            ab.addView(text("هل تعلم؟", 15, Color.parseColor("#6B4E1E"), true));
-            ab.addView(text(Cards.fact(a.key), 14, INK, false));
+            ab.addView(text(T("في اللعبة: ") + Lang.abilityName(a, lang), 15, a.predator ? PRED : HERB, true));
+            ab.addView(text(Lang.abilityText(a, lang), 14, INK, false));
+            ab.addView(text(T("هل تعلم؟"), 15, Color.parseColor("#6B4E1E"), true));
+            ab.addView(text(Lang.fact(a.key, lang), 14, INK, false));
             LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, -2);
             ap.topMargin = dp(8);
             box.addView(ab, ap);
@@ -1245,7 +1416,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             root.addView(box);
         }
         space(12);
-        root.addView(button("رجوع", Color.DKGRAY, x -> backFromInfo()));
+        root.addView(button(T("رجوع"), Color.DKGRAY, x -> backFromInfo()));
     }
 
     static final String RULES =
@@ -1271,16 +1442,43 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
       + "حماية وحيد القرن والغزالة تعمل مرة واحدة في اللعبة.\n\n"
       + "لاعبان\n"
       + "الوضع العادي: الأعلى في كل جولة يأخذ تاجاً، وأول من يجمع تاجين يفوز.\n"
-      + "وضع المبارزة: اختيار 6 حيوانات بالتناوب (1-2-2-1)، ترتيب سري، ضربة قوية +4 على مبارزة واحدة، و3 مبارزات لكل منها بيئة وحدث عشوائيان. من يفوز بمبارزتين يأخذ تاجاً.\n\n"
+      + "وضع المبارزة: تُعرض 6 حيوانات ويختار كل لاعب 3 منها سراً في نفس الوقت (يمكن أن تختارا نفس الحيوان)، ثم ترتيب سري، وضربة قوية +4 على مبارزة واحدة، و3 مبارزات لكل منها بيئة وحدث عشوائيان. من يفوز بمبارزات أكثر (ثم بمجموع النقاط) يأخذ تاجاً، وعند التعادل التام لا تاج لأحد.\n\n"
       + "الانقطاع\n"
       + "إذا انقطع اتصالك يبقى مكانك محفوظاً، واضغط «إعادة الاتصال» للعودة إلى نفس اللعبة.";
+
+    static final String RULES_EN =
+        "Goal\nBe the King of the Jungle after 3 rounds.\n\n"
+      + "Each round\n"
+      + "1. An environment and an event are revealed.\n"
+      + "2. Each player sees two animals and picks one secretly.\n"
+      + "3. The giraffe peeks at a player's animal, and the fox swaps its animal.\n"
+      + "4. Each player chooses: attack a player or hide. Jungle Spirits give +2.\n"
+      + "5. Animals are revealed: the cheetah may change its decision, and the zebra cancels a predator's hunt.\n"
+      + "6. Points are scored and the lowest is eliminated.\n\n"
+      + "Scoring\n"
+      + "• Power from 1 to 26.\n"
+      + "• Hunt: +3 to a predator for each weaker prey.\n"
+      + "• Prey: −2 if a stronger predator is present.\n"
+      + "• Herd: +2 to a non-predator if another non-predator is with it.\n"
+      + "• Environment, event and special abilities.\n"
+      + "• Small & agile: +3 for animals 1 to 8 when the environment rewards them.\n"
+      + "• Attack: +5 if you beat your target, otherwise −3.\n"
+      + "• Hide: ignore penalties but lose the hunt and herd bonuses.\n\n"
+      + "Elimination\n"
+      + "3 players: none then 1 · 4: 1 then 1 · 5: 2 then 1 · 6: 2 then 2. Round 3 is the final.\n"
+      + "The rhino's and gazelle's protection works once per game.\n\n"
+      + "Two players\n"
+      + "Normal mode: the top score each round takes a crown; first to 2 crowns wins.\n"
+      + "Duel mode: 6 animals are shown and each player secretly picks 3 at the same time (you may both pick the same animal), then a secret order, a +4 Power Strike on one duel, and 3 duels each with a random environment and event. Whoever wins more duels (then more points) takes a crown; a full tie gives no crown.\n\n"
+      + "Disconnection\n"
+      + "If you get disconnected your place is kept. Tap “Reconnect” to return to the same game.";
 
     private void showRules() {
         if (isFinishing()) return;
         new AlertDialog.Builder(this)
-            .setTitle("قواعد صراع الغابة")
-            .setMessage(RULES)
-            .setPositiveButton("حسناً", null)
+            .setTitle(T("قواعد صراع الغابة"))
+            .setMessage(Lang.en(lang) ? RULES_EN : RULES)
+            .setPositiveButton(T("حسناً"), null)
             .show();
     }
 
@@ -1291,14 +1489,26 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         {"البيئة والحدث", "لكل جولة بيئة تكافئ حيوانات معيّنة، مثل النهر للتمساح وفرس النهر. وحدث مفاجئ قد يقلب كل شيء، مثل الكسوف الذي يجعل الضعيف قوياً.", "croc"},
         {"قرارك السري", "هجوم على لاعب تختاره: +5 إن تفوّقت عليه، وإلا −3. أو اختباء: تتجاهل كل الخصومات، لكنك تخسر مكافأتي الصيد والقطيع.", "wolf"},
         {"الإقصاء وأرواح الغابة", "الأقل نقاطاً يخرج حسب عدد اللاعبين. ومن يخرج لا يجلس متفرجاً: يصبح «روح الغابة» ويمنح +2 لمن يشاء في كل جولة.", "deer"},
-        {"وضع المبارزة", "للاعبَين فقط: تختاران 6 حيوانات بالتناوب، ثم ترتّب حيواناتك سراً وتضع ضربة قوية +4 على مبارزة واحدة. من يفوز بمبارزتين يأخذ تاجاً.", "gazelle"},
+        {"وضع المبارزة", "للاعبَين فقط: يختار كل منكما 3 حيوانات سراً من 6 معروضة في نفس الوقت، فلا أفضلية لأحد. ثم ترتّب حيواناتك سراً وتضع ضربة قوية +4 على مبارزة واحدة. من يفوز بمبارزات أكثر يأخذ تاجاً.", "gazelle"},
         {"أنت جاهز!", "أنشئ غرفة أو انضم إلى غرفة قريبة. تجد القواعد دائماً في زر ؟، وتعرّف على كل الحيوانات في «موسوعة الغابة».", "owl"}
     };
 
+    private static final String[][] TUTORIAL_EN = {
+        {"Welcome to Jungle Clash", "A game for 2 to 6 players, each on their own phone in the same place. The game lasts 3 rounds, and the winner is crowned “King of the Jungle”.", "lion"},
+        {"Your animal", "Each round you see two animals and pick one secretly. Every animal has a power from 1 to 26 and a special ability written on its card.", "elephant"},
+        {"Predator and prey", "A predator gets +3 for each weaker prey in the arena. Prey lose 2 if a stronger predator is there. But non-predators protect each other: +2 herd protection.", "cheetah"},
+        {"Environment and event", "Each round has an environment that rewards certain animals, like the river for the crocodile and hippo, and a surprise event that can turn everything around, like the eclipse that makes the weak strong.", "croc"},
+        {"Your secret decision", "Attack a player you choose: +5 if you beat them, otherwise −3. Or hide: ignore all penalties, but lose the hunt and herd bonuses.", "wolf"},
+        {"Elimination and Jungle Spirits", "The lowest scores are out, depending on the number of players. But those who are out don't just watch: they become a “Jungle Spirit” and give +2 to anyone they like each round.", "deer"},
+        {"Duel mode", "Two players only: each of you secretly picks 3 of 6 shown animals at the same time, so no one has an advantage. Then you arrange your animals secretly and put a +4 Power Strike on one duel. Whoever wins more duels takes a crown.", "gazelle"},
+        {"You're ready!", "Create a room or join a nearby one. The rules are always behind the ? button, and you can meet every animal in the “Jungle Encyclopedia”.", "owl"}
+    };
+
     private void showTutorial(int i) {
+        current = () -> showTutorial(i);
         root.removeAllViews();
-        header("جولة تعليمية " + (i + 1) + " من " + TUTORIAL.length);
-        String[] step = TUTORIAL[i];
+        header(T("جولة تعليمية ") + (i + 1) + T(" من ") + TUTORIAL.length);
+        String[] step = (Lang.en(lang) ? TUTORIAL_EN : TUTORIAL)[i];
         Cards.Animal a = Cards.animal(step[2]);
         if (a != null) {
             int size = Math.min(dp(170), (int) (screenWidthPx() * 0.45f));
@@ -1310,16 +1520,16 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         root.addView(infoBox(step[0], step[1]));
         space(16);
         if (i < TUTORIAL.length - 1) {
-            root.addView(button("التالي", HERB, x -> showTutorial(i + 1)));
+            root.addView(button(T("التالي"), HERB, x -> showTutorial(i + 1)));
             space(8);
         } else {
-            root.addView(button("لنبدأ اللعب", ATTACK, x -> backFromInfo()));
+            root.addView(button(T("لنبدأ اللعب"), ATTACK, x -> backFromInfo()));
             space(8);
         }
         if (i > 0) {
-            root.addView(button("السابق", Color.DKGRAY, x -> showTutorial(i - 1)));
+            root.addView(button(T("السابق"), Color.DKGRAY, x -> showTutorial(i - 1)));
             space(8);
         }
-        if (i < TUTORIAL.length - 1) root.addView(button("تخطّي", Color.DKGRAY, x -> backFromInfo()));
+        if (i < TUTORIAL.length - 1) root.addView(button(T("تخطّي"), Color.DKGRAY, x -> backFromInfo()));
     }
 }

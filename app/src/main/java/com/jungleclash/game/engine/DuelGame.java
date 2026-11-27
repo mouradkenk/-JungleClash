@@ -7,7 +7,8 @@ import java.util.Random;
 
 /**
  * «المبارزة»: two-player mode.
- * Each round: 6 animals face up, snake draft 1-2-2-1, each player secretly orders
+ * Each round: 6 animals face up. Both players secretly and at the same time pick 3 of them
+ * (the same animal may be picked by both, so nobody has a first-pick advantage), then each secretly orders
  * their 3 animals and puts the +4 strike on one, then 3 duels are revealed one by one.
  * Every duel draws its own random environment and event at the moment it is revealed.
  * Win 2 duels = one crown. First to 2 crowns wins.
@@ -37,15 +38,12 @@ public class DuelGame {
         public boolean[] strike = new boolean[2];
         public List<List<GameEngine.Part>> parts = new ArrayList<>();
         public int[] total = new int[2];
-        public int winner;   // 0 or 1
+        public int winner;   // 0 or 1, or -1 for a draw
     }
 
     public final Side[] sides = new Side[2];
     public int round = 0;
-    public int firstPicker = 0;
     public final List<Cards.Animal> market = new ArrayList<>();
-    private final int[] draftPattern = new int[6];
-    public int draftStep = 0;
     public final List<Duel> duels = new ArrayList<>();
     public Side winner;
     public Side roundWinner;
@@ -65,15 +63,10 @@ public class DuelGame {
 
     public void startRound() {
         round++;
-        if (round > 1) firstPicker = 1 - firstPicker;
         market.clear();
         List<Cards.Animal> deck = new ArrayList<>(Cards.ANIMALS);
         Collections.shuffle(deck, rnd);
         market.addAll(deck.subList(0, 6));
-        int f = firstPicker, s = 1 - firstPicker;
-        int[] p = {f, s, s, f, f, s};
-        System.arraycopy(p, 0, draftPattern, 0, 6);
-        draftStep = 0;
         duels.clear();
         roundWinner = null;
         for (Side side : sides) {
@@ -84,18 +77,18 @@ public class DuelGame {
         }
     }
 
-    public boolean drafting() { return draftStep < 6; }
+    public boolean drafting() { return sides[0].hand.size() < 3 || sides[1].hand.size() < 3; }
 
-    /** Index of the side whose turn it is to draft, or -1 when the draft is over. */
-    public int drafter() { return drafting() ? draftPattern[draftStep] : -1; }
+    public boolean draftDone(int side) { return sides[side].hand.size() >= 3; }
 
+    /** Secret, simultaneous pick: each player takes 3 of the 6 shown animals; both may take the same one. */
     public boolean draft(int side, String key) {
-        if (side != drafter()) return false;
+        Side s = sides[side];
+        if (s.hand.size() >= 3) return false;
+        for (Cards.Animal a : s.hand) if (a.key.equals(key)) return false;
         for (Cards.Animal a : market) {
             if (a.key.equals(key)) {
-                market.remove(a);
-                sides[side].hand.add(a);
-                draftStep++;
+                s.hand.add(a);
                 return true;
             }
         }
@@ -145,11 +138,19 @@ public class DuelGame {
         d.strike[1] = sides[1].strike == d.index;
         score(d);
         duels.add(d);
-        sides[d.winner].duelsWon++;
+        if (d.winner >= 0) sides[d.winner].duelsWon++;
         if (allRevealed()) {
-            roundWinner = sides[0].duelsWon > sides[1].duelsWon ? sides[0] : sides[1];
-            roundWinner.crowns++;
-            if (roundWinner.crowns >= 2) winner = roundWinner;
+            int a = sides[0].duelsWon, b = sides[1].duelsWon;
+            if (a == b) {
+                int ta = 0, tb = 0;
+                for (Duel x : duels) { ta += x.total[0]; tb += x.total[1]; }
+                a = ta; b = tb;
+            }
+            roundWinner = a > b ? sides[0] : a < b ? sides[1] : null;   // null: a drawn round, no crown
+            if (roundWinner != null) {
+                roundWinner.crowns++;
+                if (roundWinner.crowns >= 2) winner = roundWinner;
+            }
         }
         return d;
     }
@@ -198,7 +199,7 @@ public class DuelGame {
             d.parts.add(parts);
             d.total[i] = sum(parts);
         }
-        if (ev.equals("hunter")) {
+        if (ev.equals("hunter") && leader(d) >= 0) {
             int top = leader(d);
             d.parts.get(top).add(new GameEngine.Part("الصياد", -5, "event"));
             d.total[top] = sum(d.parts.get(top));
@@ -215,7 +216,8 @@ public class DuelGame {
 
     private int leader(Duel d) {
         if (d.total[0] != d.total[1]) return d.total[0] > d.total[1] ? 0 : 1;
-        return d.animals[0].power >= d.animals[1].power ? 0 : 1;
+        if (d.animals[0].power != d.animals[1].power) return d.animals[0].power > d.animals[1].power ? 0 : 1;
+        return -1;
     }
 
     private static int sum(List<GameEngine.Part> parts) {
