@@ -55,6 +55,9 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     private static final int REQ_PERMS = 7;
 
     private LinearLayout root;
+    private float ui = 1f;          // layout scale for this screen width
+    private float fontUi = 1f;      // text scale (screen width × the phone's font setting, capped)
+    private boolean narrow;         // small phones: stack side-by-side boxes
     private NearbyLink link;
     private HostController host;          // only on the host phone
     private String hostEndpoint;          // only on player phones
@@ -70,6 +73,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        computeScale();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().getDecorView().setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
         ScrollView scroll = new ScrollView(this);
@@ -78,8 +82,14 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
-        root.setPadding(dp(16), dp(20), dp(16), dp(28));
+        root.setPadding(dp(14), dp(16), dp(14), dp(24));
         scroll.addView(root, new ScrollView.LayoutParams(-1, -2));
+        // Keep everything clear of the status bar, notch and navigation bar (edge-to-edge phones).
+        scroll.setOnApplyWindowInsetsListener((v, insets) -> {
+            v.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                         insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+            return insets;
+        });
         setContentView(scroll);
         link = new NearbyLink(this, this);
         SharedPreferences prefs = getSharedPreferences("jc", MODE_PRIVATE);
@@ -175,7 +185,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         name.setInputType(InputType.TYPE_CLASS_TEXT);
         name.setTextColor(INK);
         name.setHintTextColor(Color.GRAY);
-        name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        name.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18 * fontUi);
         name.setGravity(Gravity.CENTER);
         name.setPadding(dp(12), dp(12), dp(12), dp(12));
         name.setBackground(rounded(PANEL, GOLD, 12));
@@ -369,10 +379,8 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         String rTitle = v.optBoolean("twoPlayer") ? "الجولة " + round
                       : (v.optBoolean("finalRound") ? "الجولة " + round + " · النهائي" : "الجولة " + round);
         header(rTitle);
-        LinearLayout chips = row();
-        chips.addView(chip("البيئة: " + v.optString("envName"), v.optString("envText"), HERB), weight());
-        chips.addView(chip("الحدث: " + v.optString("eventName"), v.optString("eventText"), EVENT), weight());
-        root.addView(chips);
+        root.addView(pair(chip("البيئة: " + v.optString("envName"), v.optString("envText"), HERB),
+                          chip("الحدث: " + v.optString("eventName"), v.optString("eventText"), EVENT)));
         space(12);
 
         // ---- my animal or spirit
@@ -658,9 +666,8 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         box.setPadding(dp(10), dp(10), dp(10), dp(10));
         box.setBackground(rounded(Color.parseColor("#0B1C12"), GOLD, 14));
         box.addView(text("المبارزة " + d.optInt("n"), 19, GOLD_LIGHT, true));
-        LinearLayout chips = row();
-        chips.addView(chip("البيئة: " + d.optString("envName"), d.optString("envText"), HERB), weight());
-        chips.addView(chip("الحدث: " + d.optString("eventName"), d.optString("eventText"), EVENT), weight());
+        LinearLayout chips = pair(chip("البيئة: " + d.optString("envName"), d.optString("envText"), HERB),
+                                  chip("الحدث: " + d.optString("eventName"), d.optString("eventText"), EVENT));
         LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, -2);
         cp.topMargin = dp(6);
         box.addView(chips, cp);
@@ -699,10 +706,12 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 JSONObject r = rq.optJSONObject(i);
                 String id = r.optString("id");
                 LinearLayout line = row();
+                if (narrow) line.setOrientation(LinearLayout.VERTICAL);
                 line.setGravity(Gravity.CENTER_VERTICAL);
                 line.setPadding(dp(10), dp(8), dp(10), dp(8));
                 line.setBackground(rounded(PANEL, GOLD, 12));
-                line.addView(text(r.optString("label") + " يريد الانضمام", 16, INK, true), weight());
+                line.addView(text(r.optString("label") + " يريد الانضمام", 16, INK, true),
+                             narrow ? new LinearLayout.LayoutParams(-1, -2) : weight());
                 Button ok = button("قبول", HERB, x -> { link.accept(id); host.removeRequest(id); });
                 ok.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
                 ok.setMinHeight(dp(44));
@@ -832,7 +841,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         top.addView(power, new LinearLayout.LayoutParams(s, s));
         card.addView(top);
 
-        int size = dp(big ? 200 : 110);
+        int size = Math.min(dp(big ? 200 : 110), (int) (screenWidthPx() * (big ? 0.55f : 0.3f)));
         LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(size, size);
         ip.topMargin = dp(6);
         ip.gravity = Gravity.CENTER_HORIZONTAL;
@@ -957,7 +966,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     private TextView text(String s, int sp, int color, boolean bold) {
         TextView t = new TextView(this);
         t.setText(s);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_DIP, sp * fontUi);
         t.setTextColor(color);
         t.setTextDirection(View.TEXT_DIRECTION_RTL);
         if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
@@ -970,7 +979,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         b.setText(label);
         b.setAllCaps(false);
         b.setTextColor(Color.WHITE);
-        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17 * fontUi);
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setBackground(rounded(color, GOLD, 14));
         b.setPadding(dp(12), dp(14), dp(12), dp(14));
@@ -1012,7 +1021,35 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         new AlertDialog.Builder(this).setMessage(msg).setPositiveButton("حسناً", null).show();
     }
 
+    /** Sizes follow the phone's screen width: a 392dp-wide phone is the reference. */
+    private void computeScale() {
+        android.content.res.Configuration c = getResources().getConfiguration();
+        int w = c.screenWidthDp > 0 ? c.screenWidthDp : 392;
+        ui = Math.max(0.78f, Math.min(1.3f, w / 392f));
+        float fs = Math.max(0.9f, Math.min(1.15f, c.fontScale));
+        fontUi = ui * fs;
+        narrow = w < 360;
+    }
+
     private int dp(int v) {
-        return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics()));
+        return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v * ui, getResources().getDisplayMetrics()));
+    }
+
+    private int screenWidthPx() { return getResources().getDisplayMetrics().widthPixels; }
+
+    /** Two boxes side by side, or stacked on narrow phones. */
+    private LinearLayout pair(View a, View b) {
+        LinearLayout l = row();
+        if (narrow) {
+            l.setOrientation(LinearLayout.VERTICAL);
+            l.addView(a, new LinearLayout.LayoutParams(-1, -2));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+            lp.topMargin = dp(6);
+            l.addView(b, lp);
+        } else {
+            l.addView(a, weight());
+            l.addView(b, weight());
+        }
+        return l;
     }
 }
