@@ -76,6 +76,9 @@ public class HostController {
         if (requests.remove(id) != null) broadcast();
     }
 
+    /** True while at least one player of the running game is disconnected. */
+    public boolean hasOffline() { return !offline.isEmpty() && !phase.equals("lobby"); }
+
     /** The player behind a phone connection (changes after a reconnect). */
     public String playerFor(String endpoint) {
         String p = playerOf.get(endpoint);

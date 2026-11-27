@@ -127,6 +127,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
     private void leave() {
         autoJoin = null;
+        lastJson = "";
         hostName = null;
         link.shutdown();
         host = null;
@@ -341,6 +342,8 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             if (host != null) {
                 host.removeRequest(endpointId);
                 host.onDisconnected(endpointId);
+                // Show the room again so the player can find it and ask to come back.
+                if (host.hasOffline()) link.startHosting(myName);
             } else if (endpointId.equals(hostEndpoint)) {
                 hostEndpoint = null;
                 showReconnect();
@@ -355,10 +358,13 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 JSONObject m = new JSONObject(message);
                 String t = m.optString("t");
                 if (host != null) {
-                    if (t.equals("hello")) host.onHello(endpointId, m.optString("name"));
+                    if (t.equals("hello")) {
+                        host.onHello(endpointId, m.optString("name"));
+                        if (!host.phase().equals("lobby") && !host.hasOffline()) link.stopAdvertising();
+                    }
                     else if (t.equals("choice")) host.onChoice(host.playerFor(endpointId), m.optString("kind"), m.optString("value"));
                 } else if (t.equals("view")) {
-                    render(m);
+                    renderIfChanged(message);
                 }
             } catch (JSONException ignored) { }
         });
@@ -377,12 +383,19 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     }
 
     /** HostController.Sender: deliver a view to a player (or to this phone). */
+    private String lastJson = "";
+
+    /** Re-drawing an identical view would restart animations, so skip exact repeats. */
+    private void renderIfChanged(String json) {
+        if (json.equals(lastJson)) return;
+        lastJson = json;
+        try { render(new JSONObject(json)); } catch (JSONException ignored) { }
+    }
+
     @Override
     public void send(String playerId, String json) {
         if (HostController.LOCAL_ID.equals(playerId)) {
-            runOnUiThread(() -> {
-                try { render(new JSONObject(json)); } catch (JSONException ignored) { }
-            });
+            runOnUiThread(() -> renderIfChanged(json));
         } else {
             link.send(playerId, json);
         }
@@ -429,6 +442,9 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                           chip("الحدث: " + v.optString("eventName"), v.optString("eventText"), EVENT)));
         space(12);
 
+        // ---- revealed animals / results come first so everyone sees them
+        renderArena(v);
+
         // ---- my animal or spirit
         JSONObject animal = v.optJSONObject("animal");
         if (v.optBoolean("alive") && animal == null) {
@@ -463,24 +479,6 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             else renderPrompt(prompt);
         } else if (phase.equals("pre") || phase.equals("decide") || phase.equals("post")) {
             root.addView(waitingBox(v));
-        }
-
-        // ---- revealed arena / results
-        JSONArray arena = v.optJSONArray("arena");
-        if (arena != null) {
-            space(12);
-            boolean scored = v.optBoolean("scored");
-            root.addView(text(scored ? "نتيجة الجولة" : "الحيوانات في الساحة", 20, GOLD_LIGHT, true));
-            space(6);
-            String flipKey = v.optInt("round") + ":" + scored;
-            boolean animate = !flipKey.equals(lastFlipKey);
-            lastFlipKey = flipKey;
-            for (int i = 0; i < arena.length(); i++) {
-                View row = resultRow(arena.optJSONObject(i), scored);
-                root.addView(row);
-                if (animate) flipIn(row, 250L * i);
-                space(8);
-            }
         }
 
         if (phase.equals("over")) {
@@ -686,15 +684,11 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
     /** 3, 2, 1 … then the duel card flips in. */
     private void startCountdown(int revealed) {
-        countingDown = true;
-        ui_handler.postDelayed(() -> { if (countdownLabel != null) countdownLabel.setText("2"); }, 800);
-        ui_handler.postDelayed(() -> { if (countdownLabel != null) countdownLabel.setText("1"); }, 1600);
-        ui_handler.postDelayed(() -> {
-            countingDown = false;
+        startCountdownThen(() -> {
             shownDuels = revealed;
             justRevealed = revealed;
             if (lastView != null) render(lastView);
-        }, 2400);
+        });
     }
 
     /** Card-flip entrance: the view turns from its edge to face the player. */
@@ -703,6 +697,40 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         v.setRotationY(90f);
         v.setAlpha(0f);
         v.animate().rotationY(0f).alpha(1f).setStartDelay(delay).setDuration(450).start();
+    }
+
+    private String countedKey = "", flippedKey = "";
+
+    /** Revealed animals and round results: 3-2-1 countdown, then the cards flip in one by one. */
+    private void renderArena(JSONObject v) {
+        JSONArray arena = v.optJSONArray("arena");
+        if (arena == null) return;
+        boolean scored = v.optBoolean("scored");
+        String key = v.optInt("round") + ":" + scored;
+        root.addView(text(scored ? "نتيجة الجولة" : "الحيوانات في الساحة", 20, GOLD_LIGHT, true));
+        space(6);
+        if (!key.equals(countedKey)) {
+            if (!countingDown) startCountdownThen(() -> { countedKey = key; if (lastView != null) render(lastView); });
+            root.addView(countdownView(countdownLabel != null && countingDown ? String.valueOf(countdownLabel.getText()) : "3"));
+            space(12);
+            return;
+        }
+        boolean animate = !key.equals(flippedKey);
+        flippedKey = key;
+        for (int i = 0; i < arena.length(); i++) {
+            View r = resultRow(arena.optJSONObject(i), scored);
+            root.addView(r);
+            if (animate) flipIn(r, 220L * i);
+            space(8);
+        }
+        space(6);
+    }
+
+    private void startCountdownThen(Runnable done) {
+        countingDown = true;
+        ui_handler.postDelayed(() -> { if (countdownLabel != null) countdownLabel.setText("2"); }, 800);
+        ui_handler.postDelayed(() -> { if (countdownLabel != null) countdownLabel.setText("1"); }, 1600);
+        ui_handler.postDelayed(() -> { countingDown = false; done.run(); }, 2400);
     }
 
     private void renderDuelPrompt(JSONObject v, JSONObject prompt) {
@@ -926,54 +954,44 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         return t;
     }
 
+    /** Horizontal card: picture on one side, name, strength and ability on the other. Fits small screens. */
     private View animalCard(JSONObject a, boolean big) {
         boolean pred = a.optBoolean("pred");
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout card = row();
+        card.setGravity(Gravity.CENTER_VERTICAL);
         card.setPadding(dp(8), dp(8), dp(8), dp(8));
         card.setBackground(rounded(pred ? PRED_DARK : HERB_DARK, GOLD, 18));
 
+        int size = Math.min(dp(big ? 130 : 90), (int) (screenWidthPx() * (big ? 0.34f : 0.24f)));
+        card.addView(animalPic(a, big ? 130 : 90), new LinearLayout.LayoutParams(size, size));
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(10), 0, dp(4), 0);
         LinearLayout top = row();
         top.setGravity(Gravity.CENTER_VERTICAL);
-        TextView name = text(a.optString("name"), big ? 26 : 18, Color.WHITE, true);
-        top.addView(name, weight());
-        TextView power = text(String.valueOf(a.optInt("power")), big ? 22 : 16, Color.parseColor("#2B1D00"), true);
+        top.addView(text(a.optString("name"), big ? 22 : 17, Color.WHITE, true), weight());
+        TextView power = text(String.valueOf(a.optInt("power")), big ? 18 : 15, Color.parseColor("#2B1D00"), true);
         power.setGravity(Gravity.CENTER);
         GradientDrawable badge = new GradientDrawable();
         badge.setShape(GradientDrawable.OVAL);
         badge.setColor(GOLD_LIGHT);
         badge.setStroke(dp(2), Color.WHITE);
         power.setBackground(badge);
-        int s = dp(big ? 48 : 36);
+        int s = dp(big ? 40 : 32);
         top.addView(power, new LinearLayout.LayoutParams(s, s));
-        card.addView(top);
-
-        int size = Math.min(dp(big ? 200 : 110), (int) (screenWidthPx() * (big ? 0.55f : 0.3f)));
-        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(size, size);
-        ip.topMargin = dp(6);
-        ip.gravity = Gravity.CENTER_HORIZONTAL;
-        card.addView(animalPic(a, big ? 200 : 110), ip);
-
-        TextView type = text(pred ? "مفترس" : "غير مفترس", 13, Color.WHITE, true);
-        type.setGravity(Gravity.CENTER);
-        type.setPadding(dp(12), dp(2), dp(12), dp(2));
+        col.addView(top);
+        TextView type = text(pred ? "مفترس" : "غير مفترس", 12, Color.WHITE, true);
+        type.setPadding(dp(10), dp(1), dp(10), dp(1));
         type.setBackground(rounded(pred ? PRED : HERB, GOLD, 30));
         LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-2, -2);
-        tp.gravity = Gravity.CENTER_HORIZONTAL;
-        tp.topMargin = dp(6);
-        card.addView(type, tp);
-
-        if (big) {
-            LinearLayout ab = new LinearLayout(this);
-            ab.setOrientation(LinearLayout.VERTICAL);
-            ab.setPadding(dp(10), dp(6), dp(10), dp(8));
-            ab.setBackground(rounded(PANEL, PANEL, 10));
-            ab.addView(text(a.optString("abilityName"), 16, pred ? PRED : HERB, true));
-            ab.addView(text(a.optString("abilityText"), 14, INK, false));
-            LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, -2);
-            ap.topMargin = dp(6);
-            card.addView(ab, ap);
-        }
+        tp.topMargin = dp(4);
+        col.addView(type, tp);
+        TextView ab = text(a.optString("abilityName") + ": " + a.optString("abilityText"), big ? 13 : 12, MUTED, false);
+        LinearLayout.LayoutParams abp = new LinearLayout.LayoutParams(-1, -2);
+        abp.topMargin = dp(4);
+        col.addView(ab, abp);
+        card.addView(col, weight());
         return card;
     }
 
@@ -1139,7 +1157,8 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     private void computeScale() {
         android.content.res.Configuration c = getResources().getConfiguration();
         int w = c.screenWidthDp > 0 ? c.screenWidthDp : 392;
-        ui = Math.max(0.78f, Math.min(1.3f, w / 392f));
+        int h = c.screenHeightDp > 0 ? c.screenHeightDp : 800;
+        ui = Math.max(0.72f, Math.min(1.3f, Math.min(w / 392f, h / 760f)));
         float fs = Math.max(0.9f, Math.min(1.15f, c.fontScale));
         fontUi = ui * fs;
         narrow = w < 360;

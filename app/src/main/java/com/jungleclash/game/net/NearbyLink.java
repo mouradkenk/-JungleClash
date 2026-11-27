@@ -48,6 +48,8 @@ public class NearbyLink {
     private final Listener listener;
     private final Map<String, String> pendingNames = new HashMap<>();
     private Gate gate;            // null = accept automatically (player phones)
+    private boolean advertising;
+    private String advertisedName;
 
     public NearbyLink(Context context, Listener listener) {
         this.client = Nearby.getConnectionsClient(context);
@@ -104,10 +106,15 @@ public class NearbyLink {
         public void onEndpointLost(String endpointId) { listener.onPeerLost(endpointId); }
     };
 
+    public boolean isAdvertising() { return advertising; }
+
     public void startHosting(String name) {
+        if (advertising) return;
+        advertising = true;
+        advertisedName = name;
         AdvertisingOptions options = new AdvertisingOptions.Builder().setStrategy(Strategy.P2P_STAR).build();
         client.startAdvertising(name, SERVICE_ID, lifecycle, options)
-              .addOnFailureListener(e -> listener.onError("تعذّر إنشاء الغرفة: " + e.getMessage()));
+              .addOnFailureListener(e -> { advertising = false; listener.onError("تعذّر إنشاء الغرفة: " + e.getMessage()); });
     }
 
     public void startSearching() {
@@ -121,7 +128,10 @@ public class NearbyLink {
               .addOnFailureListener(e -> listener.onError("تعذّر الانضمام: " + e.getMessage()));
     }
 
-    public void stopAdvertising() { client.stopAdvertising(); }
+    public void stopAdvertising() {
+        advertising = false;
+        client.stopAdvertising();
+    }
 
     public void stopSearching() { client.stopDiscovery(); }
 
@@ -130,6 +140,7 @@ public class NearbyLink {
     }
 
     public void shutdown() {
+        advertising = false;
         client.stopAdvertising();
         client.stopDiscovery();
         client.stopAllEndpoints();
