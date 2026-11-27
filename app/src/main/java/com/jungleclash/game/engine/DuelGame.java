@@ -155,7 +155,7 @@ public class DuelGame {
     }
 
     private int eff(Duel d, Cards.Animal a) {
-        return d.event.key.equals("eclipse") ? 19 - a.power : a.power;
+        return d.event.key.equals("eclipse") ? 27 - a.power : a.power;
     }
 
     private void score(Duel d) {
@@ -165,22 +165,29 @@ public class DuelGame {
             Cards.Animal me = d.animals[i], op = d.animals[1 - i];
             List<GameEngine.Part> parts = new ArrayList<>();
             parts.add(new GameEngine.Part("القوة", eff(d, me), "base"));
-            if (me.predator && !op.predator && !truce && eff(d, op) < eff(d, me)) {
+            boolean opPrey = !op.predator && !op.key.equals("chameleon");
+            if (me.predator && opPrey && !truce && eff(d, op) < eff(d, me)) {
                 int per = me.key.equals("lion") ? 5 : 3;
                 if (ev.equals("night")) per *= 2;
-                boolean cancelled = op.key.equals("elephant") || op.key.equals("gorilla") || op.key.equals("zebra");
+                boolean cancelled = !me.key.equals("lynx") && (op.key.equals("elephant") || op.key.equals("gorilla") || op.key.equals("zebra"));
                 parts.add(cancelled ? new GameEngine.Part("الصيد (أُلغي بقدرة " + op.name + ")", 0, "hunt")
                                     : new GameEngine.Part("الصيد", per, "hunt"));
             }
             if (!me.predator && op.predator && !truce && eff(d, op) > eff(d, me)) {
                 if (me.key.equals("hippo")) parts.add(new GameEngine.Part("سيد الماء", 2, "ability"));
-                else if (!me.key.equals("baboon")) parts.add(new GameEngine.Part("فريسة", -2, "prey"));
+                else if (!me.key.equals("baboon") && !me.key.equals("hedgehog") && !me.key.equals("chameleon"))
+                    parts.add(new GameEngine.Part("فريسة", -2, "prey"));
             }
+            if (me.predator && op.key.equals("hedgehog") && eff(d, me) > eff(d, op)) parts.add(new GameEngine.Part("أشواك القنفذ", -3, "ability"));
+            if (me.key.equals("owl") && (ev.equals("night") || ev.equals("eclipse"))) parts.add(new GameEngine.Part("عين الليل", 5, "ability"));
+            if (me.key.equals("raccoon")) parts.add(new GameEngine.Part("اللص الماكر", 2, "ability"));
+            if (op.key.equals("raccoon")) parts.add(new GameEngine.Part("سرقه الراكون", -2, "ability"));
             if (!fire) {
                 Integer v = d.env.effects.get(me.key);
                 if (v != null) parts.add(new GameEngine.Part("البيئة: " + d.env.name, v, "env"));
                 if (me.key.equals("croc") && d.env.key.equals("river")) parts.add(new GameEngine.Part("كمين الماء", 5, "ability"));
-                if (me.power <= 5 && v != null && v > 0) parts.add(new GameEngine.Part("رشاقة الصغار", 3, "ability"));
+                if (me.power <= 8 && v != null && v > 0) parts.add(new GameEngine.Part("رشاقة الصغار", 3, "ability"));
+                if (me.key.equals("ostrich") && (d.env.key.equals("savanna") || d.env.key.equals("desert"))) parts.add(new GameEngine.Part("الركض السريع", 3, "ability"));
             }
             if (me.key.equals("elephant") && op.key.equals("cobra")) parts.add(new GameEngine.Part("لدغة الكوبرا", -6, "ability"));
             if (ev.equals("drought")) parts.add(new GameEngine.Part("الجفاف", -2, "event"));

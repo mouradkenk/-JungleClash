@@ -636,13 +636,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         box.setGravity(Gravity.CENTER_VERTICAL);
         box.setPadding(dp(8), dp(8), dp(8), dp(8));
         box.setBackground(rounded(pred ? PRED_DARK : HERB_DARK, GOLD, 12));
-        ImageView img = new ImageView(this);
-        int res = getResources().getIdentifier("a_" + a.optString("key"), "drawable", getPackageName());
-        if (res != 0) img.setImageResource(res);
-        img.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        img.setBackground(rounded(Color.BLACK, GOLD, 8));
-        img.setClipToOutline(true);
-        box.addView(img, new LinearLayout.LayoutParams(dp(84), dp(60)));
+        box.addView(animalPic(a, 64), new LinearLayout.LayoutParams(dp(64), dp(64)));
         LinearLayout mid = new LinearLayout(this);
         mid.setOrientation(LinearLayout.VERTICAL);
         mid.setPadding(dp(10), 0, dp(10), 0);
@@ -797,6 +791,25 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
     // ================================================================ widgets
 
+    /** The animal's round badge, or a gold-ringed name badge if no picture is bundled yet. */
+    private View animalPic(JSONObject a, int sizeDp) {
+        int res = getResources().getIdentifier("a_" + a.optString("key"), "drawable", getPackageName());
+        if (res != 0) {
+            ImageView img = new ImageView(this);
+            img.setImageResource(res);
+            img.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            return img;
+        }
+        TextView t = text(a.optString("name"), Math.max(12, sizeDp / 7), GOLD_LIGHT, true);
+        t.setGravity(Gravity.CENTER);
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.OVAL);
+        g.setColor(a.optBoolean("pred") ? PRED_DARK : HERB_DARK);
+        g.setStroke(dp(Math.max(3, sizeDp / 20)), GOLD);
+        t.setBackground(g);
+        return t;
+    }
+
     private View animalCard(JSONObject a, boolean big) {
         boolean pred = a.optBoolean("pred");
         LinearLayout card = new LinearLayout(this);
@@ -819,15 +832,11 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         top.addView(power, new LinearLayout.LayoutParams(s, s));
         card.addView(top);
 
-        ImageView img = new ImageView(this);
-        int res = getResources().getIdentifier("a_" + a.optString("key"), "drawable", getPackageName());
-        if (res != 0) img.setImageResource(res);
-        img.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        img.setBackground(rounded(Color.BLACK, GOLD, 10));
-        img.setClipToOutline(true);
-        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(-1, dp(big ? 190 : 110));
+        int size = dp(big ? 200 : 110);
+        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(size, size);
         ip.topMargin = dp(6);
-        card.addView(img, ip);
+        ip.gravity = Gravity.CENTER_HORIZONTAL;
+        card.addView(animalPic(a, big ? 200 : 110), ip);
 
         TextView type = text(pred ? "مفترس" : "غير مفترس", 13, Color.WHITE, true);
         type.setGravity(Gravity.CENTER);
@@ -863,13 +872,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
         LinearLayout top = row();
         top.setGravity(Gravity.CENTER_VERTICAL);
-        ImageView img = new ImageView(this);
-        int res = getResources().getIdentifier("a_" + a.optString("key"), "drawable", getPackageName());
-        if (res != 0) img.setImageResource(res);
-        img.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        img.setBackground(rounded(Color.BLACK, GOLD, 8));
-        img.setClipToOutline(true);
-        top.addView(img, new LinearLayout.LayoutParams(dp(72), dp(52)));
+        top.addView(animalPic(a, 58), new LinearLayout.LayoutParams(dp(58), dp(58)));
 
         LinearLayout mid = new LinearLayout(this);
         mid.setOrientation(LinearLayout.VERTICAL);

@@ -142,7 +142,7 @@ public class GameEngine {
 
     private boolean eclipse() { return "eclipse".equals(event.key); }
 
-    public int eff(Player p) { return eclipse() ? 19 - p.animal.power : p.animal.power; }
+    public int eff(Player p) { return eclipse() ? 27 - p.animal.power : p.animal.power; }
 
     private Comparator<Player> byTotalThenPowerDesc() {
         return (a, b) -> a.total != b.total ? Integer.compare(b.total, a.total) : Integer.compare(b.animal.power, a.animal.power);
@@ -163,6 +163,13 @@ public class GameEngine {
         Player weakestPred = null;
         if (gorilla) for (Player p : arena) if (p.animal.predator && (weakestPred == null || eff(p) < eff(weakestPred))) weakestPred = p;
 
+        Player hedgehog = holder("hedgehog");
+        // The eagle scatters the herd of the prey it hunts.
+        Player eagle = holder("eagle");
+        boolean eagleHunts = false;
+        if (eagle != null && !truce && !huntCancelled(eagle, elephant, weakestPred))
+            for (Player q : arena) if (isPrey(q) && eff(q) < eff(eagle)) eagleHunts = true;
+
         for (Player p : arena) {
             List<Part> parts = new ArrayList<>();
             Cards.Animal a = p.animal;
@@ -171,25 +178,27 @@ public class GameEngine {
 
             if (a.predator && !truce) {
                 int prey = 0;
-                for (Player q : arena) if (!q.animal.predator && eff(q) < eff(p)) prey++;
+                for (Player q : arena) if (isPrey(q) && eff(q) < eff(p)) prey++;
                 int per = a.key.equals("lion") ? 5 : 3;
                 if (ev.equals("night")) per *= 2;
-                boolean cancelled = elephant || p == weakestPred || p.id.equals(zebraTargetId);
+                boolean cancelled = huntCancelled(p, elephant, weakestPred);
                 if (prey > 0) {
                     if (cancelled) parts.add(new Part("الصيد (أُلغي)", 0, "hunt"));
                     else parts.add(new Part("الصيد: " + prey + " فريسة", prey * per, "hunt"));
                 }
+                if (hedgehog != null && eff(p) > eff(hedgehog)) parts.add(new Part("أشواك القنفذ", -3, "ability"));
             }
             if (!a.predator && !truce) {
                 boolean threatened = false;
                 for (Player q : arena) if (q.animal.predator && eff(q) > eff(p)) threatened = true;
                 if (threatened) {
                     if (a.key.equals("hippo")) parts.add(new Part("سيد الماء", 2, "ability"));
-                    else if (!a.key.equals("baboon")) parts.add(new Part("فريسة", -2, "prey"));
+                    else if (isPrey(p) && !a.key.equals("baboon") && !a.key.equals("hedgehog")) parts.add(new Part("فريسة", -2, "prey"));
                 }
             }
             if (!a.predator && nonPredCount >= 2) {
                 if (tiger) parts.add(new Part("القطيع (ألغاه النمر)", 0, "herd"));
+                else if (eagleHunts && isPrey(p) && eff(p) < eff(eagle)) parts.add(new Part("القطيع (فرّقه النسر)", 0, "herd"));
                 else parts.add(new Part("حماية القطيع", a.key.equals("buffalo") ? 5 : 2, "herd"));
             }
             if (a.key.equals("wolf") && predCount > 1) parts.add(new Part("عواء القطيع", 2 * (predCount - 1), "ability"));
@@ -197,8 +206,11 @@ public class GameEngine {
                 Integer d = env.effects.get(a.key);
                 if (d != null) parts.add(new Part("البيئة: " + env.name, d, "env"));
                 if (a.key.equals("croc") && env.key.equals("river")) parts.add(new Part("كمين الماء", 5, "ability"));
-                if (a.power <= 5 && d != null && d > 0) parts.add(new Part("رشاقة الصغار", 3, "ability"));
+                if (a.power <= 8 && d != null && d > 0) parts.add(new Part("رشاقة الصغار", 3, "ability"));
+                if (a.key.equals("ostrich") && (env.key.equals("savanna") || env.key.equals("desert"))) parts.add(new Part("الركض السريع", 3, "ability"));
             }
+            if (a.key.equals("bear") && HIDE.equals(p.decision)) parts.add(new Part("السبات", 4, "ability"));
+            if (a.key.equals("owl") && (ev.equals("night") || ev.equals("eclipse"))) parts.add(new Part("عين الليل", 5, "ability"));
             if (a.key.equals("hyena") && eliminatedLastRound > 0) parts.add(new Part("القمّام", 2 * eliminatedLastRound, "ability"));
             if (a.key.equals("elephant") && holder("cobra") != null) parts.add(new Part("لدغة الكوبرا", -6, "ability"));
             if (ev.equals("drought")) parts.add(new Part("الجفاف", -2, "event"));
@@ -228,6 +240,18 @@ public class GameEngine {
                 for (Part part : p.parts)
                     if (part.cat.equals("hunt") || part.cat.equals("herd") || part.value < 0) part.ignored = true;
             sum(p);
+        }
+
+        Player raccoon = holder("raccoon");
+        if (raccoon != null && arena.size() > 1) {
+            Player victim = null;
+            for (Player q : arena) if (q != raccoon && (victim == null || q.total > victim.total)) victim = q;
+            raccoon.parts.add(new Part("اللص الماكر: سرق من " + victim.name, 2, "ability"));
+            Part stolen = new Part("سرقه الراكون", -2, "ability");
+            if (HIDE.equals(victim.decision)) stolen.ignored = true;
+            victim.parts.add(stolen);
+            sum(raccoon);
+            sum(victim);
         }
 
         if (ev.equals("hunter")) {
@@ -266,6 +290,14 @@ public class GameEngine {
         }
 
         settle(arena);
+    }
+
+    /** Chameleons are never prey. */
+    private boolean isPrey(Player p) { return !p.animal.predator && !p.animal.key.equals("chameleon"); }
+
+    private boolean huntCancelled(Player p, boolean elephant, Player weakestPred) {
+        if (p.animal.key.equals("lynx")) return false;
+        return elephant || p == weakestPred || p.id.equals(zebraTargetId);
     }
 
     private void sum(Player p) {
