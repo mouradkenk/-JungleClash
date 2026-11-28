@@ -18,6 +18,7 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -217,7 +218,9 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         TextView sub = text(T("لعبة القوة والدهاء · من 2 إلى 6 لاعبين · بدون إنترنت"), 14, MUTED, false);
         sub.setGravity(Gravity.CENTER);
         root.addView(sub);
-        space(24);
+        space(10);
+        root.addView(animalCarousel());
+        space(14);
 
         EditText name = new EditText(this);
         name.setHint(T("اكتب اسمك"));
@@ -265,7 +268,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         space(8);
         root.addView(button(T("جولة تعليمية"), Color.parseColor("#6B4E1E"), v -> showTutorial(0)));
         space(18);
-        root.addView(infoBox(T("كيف تلعب"),
+        root.addView(infoBox(T("كيف تلعب"), 13,
             T("• شغّلوا البلوتوث والموقع (GPS) على كل الهواتف.\n")
           + T("• لاعب واحد ينشئ الغرفة، والباقون ينضمون إليها.\n")
           + T("• كل لاعب يرى حيوانه وقراره سراً على هاتفه.\n")
@@ -650,20 +653,10 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             root.addView(waitingBox(v));
         }
 
-        if (phase.equals("over")) {
+        boolean resultsShown = (v.optInt("round") + ":true").equals(countedKey);
+        if (phase.equals("over") && resultsShown) {
             space(8);
-            LinearLayout win = new LinearLayout(this);
-            win.setOrientation(LinearLayout.VERTICAL);
-            win.setGravity(Gravity.CENTER);
-            win.setPadding(dp(12), dp(10), dp(12), dp(10));
-            win.setBackground(rounded(HERB_DARK, GOLD, 16));
-            ImageView logo = new ImageView(this);
-            logo.setImageResource(R.drawable.logo);
-            win.addView(logo, new LinearLayout.LayoutParams(dp(72), dp(72)));
-            TextView w = text(T("ملك الغابة: ") + v.optString("winner"), 26, GOLD_LIGHT, true);
-            w.setGravity(Gravity.CENTER);
-            win.addView(w);
-            root.addView(win);
+            root.addView(winnerBox(v.optString("winner")));
         }
 
         if (isHost && (phase.equals("result") || phase.equals("over"))) {
@@ -826,18 +819,8 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 space(10);
                 if (isHost) root.addView(button(T("الجولة التالية"), HERB, x -> { answered.clear(); host.nextRound(); }));
             } else if (phase.equals("over")) {
-                LinearLayout win = new LinearLayout(this);
-                win.setOrientation(LinearLayout.VERTICAL);
-                win.setGravity(Gravity.CENTER);
-                win.setPadding(dp(12), dp(10), dp(12), dp(10));
-                win.setBackground(rounded(HERB_DARK, GOLD, 16));
-                ImageView logo = new ImageView(this);
-                logo.setImageResource(R.drawable.logo);
-                win.addView(logo, new LinearLayout.LayoutParams(dp(72), dp(72)));
-                TextView w = text(T("ملك الغابة: ") + v.optString("winner"), 26, GOLD_LIGHT, true);
-                w.setGravity(Gravity.CENTER);
-                win.addView(w);
-                root.addView(win);
+                if (countingDown || justRevealed != 0) { space(18); root.addView(playersStrip(v)); return; }  // let the last duel finish its countdown
+                root.addView(winnerBox(v.optString("winner")));
                 space(12);
                 if (isHost) newGameButtons(v);
                 else root.addView(roomBoard(v));
@@ -952,7 +935,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         box.setGravity(Gravity.CENTER_VERTICAL);
         box.setPadding(dp(6), dp(6), dp(6), dp(6));
         box.setBackground(rounded(pred ? PRED_DARK : HERB_DARK, GOLD, 12));
-        box.addView(animalPic(a, 64), new LinearLayout.LayoutParams(dp(64), dp(64)));
+        box.addView(haloWrap(animalPic(a, 64), dp(64)), new LinearLayout.LayoutParams(dp(78), dp(78)));
         LinearLayout mid = new LinearLayout(this);
         mid.setOrientation(LinearLayout.VERTICAL);
         mid.setPadding(dp(10), 0, dp(10), 0);
@@ -960,11 +943,12 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         mid.addView(text((pred ? T("مفترس") : T("غير مفترس")) + " · " + a.optString("abilityName"), 13, MUTED, false));
         box.addView(mid, weight());
         if (action != null) {
-            Button b = button(action, pred ? PRED : HERB, onClick);
-            b.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
-            b.setMinHeight(dp(44));
-            box.addView(b);
+            TextView tag = text(action, 15, Color.WHITE, true);
+            tag.setPadding(dp(10), dp(6), dp(10), dp(6));
+            tag.setBackground(rounded(pred ? PRED : HERB, GOLD, 12));
+            box.addView(tag, new LinearLayout.LayoutParams(-2, -2));
         }
+        if (onClick != null) { picking = false; tapToChoose(box, () -> onClick.onClick(box)); }
         return box;
     }
 
@@ -1110,14 +1094,15 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         TextView t = text(T("اختر حيوانك لهذه الجولة سراً"), 20, GOLD_LIGHT, true);
         t.setGravity(Gravity.CENTER);
         root.addView(t);
-        root.addView(text(T("الحيوان الآخر يعود إلى الكومة."), 14, MUTED, false));
+        root.addView(text(T("اضغط على صورة الحيوان لاختياره. الحيوان الآخر يعود إلى الكومة."), 14, MUTED, false));
+        picking = false;
         for (int i = 0; hand != null && i < hand.length(); i++) {
             JSONObject a = hand.optJSONObject(i);
             space(10);
-            root.addView(animalCard(a, true));
-            space(6);
+            View card = animalCard(a, true);
             String key = a.optString("key");
-            root.addView(button(T("أختار ") + a.optString("name"), a.optBoolean("pred") ? PRED : HERB, x -> choose("pick", key)));
+            tapToChoose(card, () -> choose("pick", key));
+            root.addView(card);
         }
     }
 
@@ -1161,7 +1146,8 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         card.setBackground(rounded(pred ? PRED_DARK : HERB_DARK, GOLD, 18));
 
         int size = Math.min(dp(big ? 110 : 80), (int) (screenWidthPx() * (big ? 0.30f : 0.22f)));
-        card.addView(animalPic(a, big ? 130 : 90), new LinearLayout.LayoutParams(size, size));
+        int outer = Math.round(size * 1.22f);
+        card.addView(haloWrap(animalPic(a, big ? 130 : 90), size), new LinearLayout.LayoutParams(outer, outer));
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
@@ -1204,7 +1190,9 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
         LinearLayout top = row();
         top.setGravity(Gravity.CENTER_VERTICAL);
-        top.addView(animalPic(a, 58), new LinearLayout.LayoutParams(dp(58), dp(58)));
+        FrameLayout pic = haloWrap(animalPic(a, 58), dp(58));
+        top.addView(pic, new LinearLayout.LayoutParams(dp(72), dp(72)));
+        if (scored && r.optBoolean("won")) shine(pic);
 
         LinearLayout mid = new LinearLayout(this);
         mid.setOrientation(LinearLayout.VERTICAL);
@@ -1289,14 +1277,186 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         return c;
     }
 
-    private View infoBox(String title, String body) {
+    private View infoBox(String title, String body) { return infoBox(title, 15, body); }
+
+    private View infoBox(String title, int bodySp, String body) {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
         c.setPadding(dp(10), dp(8), dp(10), dp(8));
         c.setBackground(rounded(PANEL, GOLD, 14));
-        c.addView(text(title, 17, HERB, true));
-        c.addView(text(body, 15, INK, false));
+        c.addView(text(title, bodySp + 2, HERB, true));
+        c.addView(text(body, bodySp, INK, false));
         return c;
+    }
+
+    private String winnerShownFor = "";
+
+    /** "King of the Jungle": a small crown over the winner's name, which pops in and then keeps breathing. */
+    private View winnerBox(String name) {
+        LinearLayout win = new LinearLayout(this);
+        win.setOrientation(LinearLayout.VERTICAL);
+        win.setGravity(Gravity.CENTER);
+        win.setPadding(dp(12), dp(10), dp(12), dp(12));
+        win.setBackground(rounded(HERB_DARK, GOLD, 16));
+        TextView title = text(T("ملك الغابة"), 18, GOLD, true);
+        title.setGravity(Gravity.CENTER);
+        win.addView(title);
+        ImageView crown = new ImageView(this);
+        crown.setImageResource(R.drawable.ic_crown);
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(dp(42), dp(42));
+        cp.gravity = Gravity.CENTER_HORIZONTAL;
+        cp.topMargin = dp(4);
+        win.addView(crown, cp);
+        TextView w = text(name, 30, GOLD_LIGHT, true);
+        w.setGravity(Gravity.CENTER);
+        win.addView(w);
+        boolean first = !name.equals(winnerShownFor);
+        winnerShownFor = name;
+        if (first) {            // entrance: drop the crown on, pop the name in
+            crown.setTranslationY(-dp(40)); crown.setAlpha(0f);
+            crown.animate().translationY(0).alpha(1f).setStartDelay(350).setDuration(450).start();
+            w.setScaleX(0.3f); w.setScaleY(0.3f); w.setAlpha(0f);
+            w.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(550).start();
+        }
+        android.animation.ObjectAnimator pulse = android.animation.ObjectAnimator.ofPropertyValuesHolder(w,
+            android.animation.PropertyValuesHolder.ofFloat("scaleX", 1f, 1.08f),
+            android.animation.PropertyValuesHolder.ofFloat("scaleY", 1f, 1.08f));
+        pulse.setStartDelay(first ? 600 : 0);
+        pulse.setDuration(800);
+        pulse.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+        pulse.setRepeatMode(android.animation.ValueAnimator.REVERSE);
+        pulse.start();
+        android.animation.ObjectAnimator tilt = android.animation.ObjectAnimator.ofFloat(crown, "rotation", -6f, 6f);
+        tilt.setStartDelay(first ? 800 : 0);
+        tilt.setDuration(900);
+        tilt.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+        tilt.setRepeatMode(android.animation.ValueAnimator.REVERSE);
+        tilt.start();
+        return win;
+    }
+
+    // ================================================================ picture effects
+
+    private boolean picking;
+
+    /** A picture with a golden halo behind it (hidden until it shines). */
+    private FrameLayout haloWrap(View pic, int size) {
+        FrameLayout f = new FrameLayout(this);
+        int outer = Math.round(size * 1.22f);
+        View halo = new View(this);
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.OVAL);
+        g.setGradientType(GradientDrawable.RADIAL_GRADIENT);
+        g.setGradientRadius(outer / 2f);
+        g.setColors(new int[]{Color.argb(255, 255, 226, 120), Color.argb(170, 255, 190, 40), Color.argb(0, 255, 170, 0)});
+        halo.setBackground(g);
+        halo.setAlpha(0f);
+        FrameLayout.LayoutParams hp = new FrameLayout.LayoutParams(outer, outer);
+        hp.gravity = Gravity.CENTER;
+        f.addView(halo, hp);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(size, size);
+        lp.gravity = Gravity.CENTER;
+        f.addView(pic, lp);
+        f.setTag(halo);
+        return f;
+    }
+
+    private FrameLayout findHalo(View v) {
+        if (v instanceof FrameLayout && v.getTag() instanceof View) return (FrameLayout) v;
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                FrameLayout f = findHalo(g.getChildAt(i));
+                if (f != null) return f;
+            }
+        }
+        return null;
+    }
+
+    /** Tapping the card spins the picture once with a golden flash, then makes the choice. */
+    private void tapToChoose(View card, Runnable choose) {
+        card.setClickable(true);
+        card.setOnClickListener(x -> {
+            if (picking) return;
+            picking = true;
+            FrameLayout f = findHalo(card);
+            if (f == null) { choose.run(); return; }
+            View halo = (View) f.getTag(), pic = f.getChildAt(1);
+            halo.setScaleX(0.8f); halo.setScaleY(0.8f);
+            halo.animate().alpha(1f).scaleX(1.12f).scaleY(1.12f).setDuration(350).start();
+            pic.animate().rotationY(360f).scaleX(1.1f).scaleY(1.1f).setDuration(700)
+               .withEndAction(choose).start();
+        });
+    }
+
+    /** Endless soft golden pulse behind the winner's picture. */
+    private void shine(FrameLayout f) {
+        View halo = (View) f.getTag();
+        halo.setAlpha(0.5f);
+        android.animation.ObjectAnimator a = android.animation.ObjectAnimator.ofPropertyValuesHolder(halo,
+            android.animation.PropertyValuesHolder.ofFloat("alpha", 0.45f, 1f),
+            android.animation.PropertyValuesHolder.ofFloat("scaleX", 0.92f, 1.1f),
+            android.animation.PropertyValuesHolder.ofFloat("scaleY", 0.92f, 1.1f));
+        a.setDuration(750);
+        a.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+        a.setRepeatMode(android.animation.ValueAnimator.REVERSE);
+        a.start();
+    }
+
+    // ================================================================ home carousel
+
+    private int homeGen;
+    private final java.util.Random uiRnd = new java.util.Random();
+
+    /** Four animal badges that keep turning into other random animals while the player types a name. */
+    private View animalCarousel() {
+        final int gen = ++homeGen;
+        LinearLayout r = row();
+        r.setGravity(Gravity.CENTER);
+        final ImageView[] slots = new ImageView[4];
+        final java.util.List<String> shown = new java.util.ArrayList<>();
+        for (int i = 0; i < slots.length; i++) {
+            ImageView iv = new ImageView(this);
+            iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            String k = randomAnimalKey(shown);
+            shown.add(k);
+            iv.setImageResource(drawableFor(k));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(68), dp(68));
+            lp.setMarginStart(dp(4));
+            lp.setMarginEnd(dp(4));
+            r.addView(iv, lp);
+            slots[i] = iv;
+        }
+        Runnable tick = new Runnable() {
+            @Override public void run() {
+                if (gen != homeGen || !slots[0].isAttachedToWindow()) return;   // the home screen is gone
+                int i = uiRnd.nextInt(slots.length);
+                ImageView iv = slots[i];
+                String k = randomAnimalKey(shown);
+                shown.set(i, k);
+                iv.animate().rotationY(90f).setDuration(220).withEndAction(() -> {
+                    iv.setImageResource(drawableFor(k));
+                    iv.setRotationY(-90f);
+                    iv.animate().rotationY(0f).setDuration(220).start();
+                }).start();
+                ui_handler.postDelayed(this, 700 + uiRnd.nextInt(900));
+            }
+        };
+        ui_handler.postDelayed(tick, 900);
+        return r;
+    }
+
+    private String randomAnimalKey(java.util.List<String> avoid) {
+        for (int t = 0; t < 20; t++) {
+            String k = Cards.ANIMALS.get(uiRnd.nextInt(Cards.ANIMALS.size())).key;
+            if (!avoid.contains(k)) return k;
+        }
+        return Cards.ANIMALS.get(0).key;
+    }
+
+    private int drawableFor(String key) {
+        int res = getResources().getIdentifier("a_" + key, "drawable", getPackageName());
+        return res == 0 ? R.drawable.logo : res;
     }
 
     // ================================================================ background music
