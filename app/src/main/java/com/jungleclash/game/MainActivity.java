@@ -124,6 +124,8 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     @Override
     protected void onDestroy() {
         if (link != null) link.shutdown();
+        stopSound();
+        stopMusic();
         super.onDestroy();
     }
 
@@ -194,6 +196,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
     private void showHome() {
         current = this::showHome;
+        music("menu");
         root.removeAllViews();
         LinearLayout top = row();
         top.setGravity(Gravity.END);
@@ -230,15 +233,15 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         root.addView(name, new LinearLayout.LayoutParams(-1, -2));
         space(16);
 
-        root.addView(button(T("إنشاء غرفة (أنا المضيف)"), HERB, v -> {
+        root.addView(withIcon(R.drawable.ic_bt, button(T("إنشاء غرفة (أنا المضيف)"), HERB, v -> {
             if (!saveName(name)) return;
             withPermissions(this::startHosting);
-        }));
+        })));
         space(10);
-        root.addView(button(T("الانضمام إلى غرفة قريبة"), ATTACK, v -> {
+        root.addView(withIcon(R.drawable.ic_bt, button(T("الانضمام إلى غرفة قريبة"), ATTACK, v -> {
             if (!saveName(name)) return;
             withPermissions(this::startSearching);
-        }));
+        })));
         space(10);
         root.addView(button(T("العب وحدك ضد الكمبيوتر"), EVENT, v -> {
             if (!saveName(name)) return;
@@ -247,14 +250,14 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         space(14);
         root.addView(text(T("اللعب عبر الإنترنت"), 17, GOLD_LIGHT, true));
         space(6);
-        root.addView(pair(button(T("إنشاء غرفة على الإنترنت"), HERB, v -> {
+        root.addView(pair(withIcon(R.drawable.ic_wifi, button(T("إنشاء غرفة على الإنترنت"), HERB, v -> {
                               if (!saveName(name)) return;
                               startOnlineHosting();
-                          }),
-                          button(T("الانضمام برمز الغرفة"), ATTACK, v -> {
+                          })),
+                          withIcon(R.drawable.ic_wifi, button(T("الانضمام برمز الغرفة"), ATTACK, v -> {
                               if (!saveName(name)) return;
                               showJoinCode();
-                          })));
+                          }))));
         space(18);
         LinearLayout extras = pair(button(T("موسوعة الغابة"), EVENT, v -> showEncyclopedia()),
                                    button(T("القواعد"), HIDE, v -> showRules()));
@@ -590,6 +593,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     private void render(JSONObject v) {
         lastView = v;
         current = null;
+        music(musicFor(v));
         root.removeAllViews();
         String phase = v.optString("phase");
         boolean isHost = v.optBoolean("isHost");
@@ -796,7 +800,13 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 }
                 View block = duelBlock(ds.optJSONObject(i));
                 root.addView(block);
-                if (i == revealed - 1 && justRevealed == revealed) { flipIn(block, 0); justRevealed = 0; }
+                if (i == revealed - 1 && justRevealed == revealed) {
+                    flipIn(block, 0);
+                    justRevealed = 0;
+                    JSONArray rows = ds.optJSONObject(i).optJSONArray("rows");
+                    for (int k = 0; rows != null && k < rows.length(); k++)
+                        if (rows.optJSONObject(k).optBoolean("won")) playAnimal(rows.optJSONObject(k).optJSONObject("animal"), 250);
+                }
             }
             space(14);
             if (countingDown || revealed > shownDuels) {
@@ -888,6 +898,8 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             View r = resultRow(arena.optJSONObject(i), scored);
             root.addView(r);
             if (animate) flipIn(r, 220L * i);
+            if (animate && scored && arena.optJSONObject(i).optBoolean("won"))
+                playAnimal(arena.optJSONObject(i).optJSONObject("animal"), 220L * i + 250);
             space(8);
         }
         space(6);
@@ -1260,6 +1272,9 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(dp(46), dp(46));
         lp2.setMarginStart(dp(6));
         h.addView(langButton(), lp2);
+        LinearLayout.LayoutParams lp3 = new LinearLayout.LayoutParams(dp(46), dp(46));
+        lp3.setMarginStart(dp(6));
+        h.addView(soundButton(), lp3);
         root.addView(h);
         space(10);
     }
@@ -1282,6 +1297,123 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         c.addView(text(title, 17, HERB, true));
         c.addView(text(body, 15, INK, false));
         return c;
+    }
+
+    // ================================================================ background music
+
+    private android.media.MediaPlayer bg;
+    private String bgName = "";
+    private float bgVolume = 0.5f;
+
+    /** Which loop fits the screen: the round's event when it changes the mood, otherwise its environment. */
+    private String musicFor(JSONObject v) {
+        String env = v.optString("envKey"), ev = v.optString("eventKey");
+        if (v.optString("mode").equals("duel")) {
+            JSONArray ds = v.optJSONArray("duels");
+            JSONObject last = ds == null || ds.length() == 0 ? null : ds.optJSONObject(ds.length() - 1);
+            if (last == null) return v.optString("phase").equals("lobby") ? "menu" : "tense";
+            env = last.optString("envKey"); ev = last.optString("eventKey");
+        }
+        if (v.optString("phase").equals("lobby") || env.isEmpty()) return "menu";
+        if (v.optString("phase").equals("over")) return "savanna";
+        switch (ev) {
+            case "night": return "night";
+            case "fire": return "fire";
+            case "clash": case "earthquake": case "hunter": case "eclipse": return "tense";
+            default: return env;
+        }
+    }
+
+    private void music(String name) {
+        if (!soundOn()) { stopMusic(); return; }
+        if (name.equals(bgName) && bg != null) return;
+        int res = getResources().getIdentifier("m_" + name, "raw", getPackageName());
+        if (res == 0) return;
+        stopMusic();
+        try {
+            bg = android.media.MediaPlayer.create(this, res);
+            if (bg == null) return;
+            bg.setLooping(true);
+            bg.setVolume(bgVolume, bgVolume);
+            bg.start();
+            bgName = name;
+        } catch (RuntimeException e) { bg = null; bgName = ""; }
+    }
+
+    private void stopMusic() {
+        if (bg != null) {
+            try { bg.release(); } catch (RuntimeException ignored) { }
+            bg = null;
+        }
+        bgName = "";
+    }
+
+    /** Lower the music while an animal calls, then bring it back. */
+    private void duckMusic(long ms) {
+        if (bg == null) return;
+        try { bg.setVolume(0.15f, 0.15f); } catch (RuntimeException ignored) { }
+        ui_handler.postDelayed(() -> {
+            if (bg != null) try { bg.setVolume(bgVolume, bgVolume); } catch (RuntimeException ignored) { }
+        }, ms);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (bg != null) try { bg.pause(); } catch (RuntimeException ignored) { }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (bg != null && soundOn()) try { bg.start(); } catch (RuntimeException ignored) { }
+    }
+
+    // ================================================================ sound
+
+    private android.media.MediaPlayer player;
+
+    private boolean soundOn() { return getSharedPreferences("jc", MODE_PRIVATE).getBoolean("sound", true); }
+
+    private Button soundButton() {
+        Button b = button(soundOn() ? "🔊" : "🔇", Color.parseColor("#6B4E1E"), null);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16 * fontUi);
+        b.setMinHeight(dp(44));
+        b.setMinWidth(dp(44));
+        b.setPadding(0, 0, 0, 0);
+        b.setOnClickListener(x -> {
+            boolean on = !soundOn();
+            getSharedPreferences("jc", MODE_PRIVATE).edit().putBoolean("sound", on).apply();
+            if (!on) { stopSound(); stopMusic(); }
+            else music(lastView != null && current == null ? musicFor(lastView) : "menu");
+            b.setText(on ? "🔊" : "🔇");
+        });
+        return b;
+    }
+
+    /** The winning animal's real call (3 s), played once when its card flips in. */
+    private void playAnimal(JSONObject animal, long delayMs) {
+        if (animal == null || !soundOn()) return;
+        int res = getResources().getIdentifier("s_" + animal.optString("key"), "raw", getPackageName());
+        if (res == 0) return;
+        ui_handler.postDelayed(() -> {
+            if (!soundOn()) return;
+            stopSound();
+            try {
+                player = android.media.MediaPlayer.create(this, res);
+                if (player == null) return;
+                player.setOnCompletionListener(mp -> { mp.release(); if (player == mp) player = null; });
+                player.start();
+                duckMusic(3000);
+            } catch (RuntimeException ignored) { player = null; }
+        }, delayMs);
+    }
+
+    private void stopSound() {
+        if (player != null) {
+            try { player.release(); } catch (RuntimeException ignored) { }
+            player = null;
+        }
     }
 
     // ================================================================ language
@@ -1369,6 +1501,16 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                              attack ? Color.parseColor("#FFD9CF") : Color.parseColor("#CFEBD3"), false);
         b.addView(hint, new LinearLayout.LayoutParams(-2, -2));
         b.setContentDescription(label);
+        return b;
+    }
+
+    /** Puts a small icon (Bluetooth / Wi-Fi) at the start of a button. */
+    private Button withIcon(int res, Button b) {
+        android.graphics.drawable.Drawable d = getResources().getDrawable(res, null);
+        int s = dp(24);
+        d.setBounds(0, 0, s, s);
+        b.setCompoundDrawablesRelative(d, null, null, null);
+        b.setCompoundDrawablePadding(dp(8));
         return b;
     }
 

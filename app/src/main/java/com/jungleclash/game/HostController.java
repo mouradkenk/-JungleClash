@@ -676,6 +676,8 @@ public class HostController {
         if (phase.equals("lobby") || me == null) return v;
         if (mode.equals("duel")) return duelView(v, id);
 
+        v.put("envKey", engine.env.key);
+        v.put("eventKey", engine.event.key);
         v.put("envName", Lang.name(engine.env, L));
         v.put("envText", Lang.text(engine.env, L));
         v.put("eventName", Lang.name(engine.event, L));
@@ -846,6 +848,8 @@ public class HostController {
         for (DuelGame.Duel d : duel.duels) {
             JSONObject o = new JSONObject();
             o.put("n", d.index + 1);
+            o.put("envKey", d.env.key);
+            o.put("eventKey", d.event.key);
             o.put("envName", Lang.name(d.env, L));
             o.put("envText", Lang.text(d.env, L));
             o.put("eventName", Lang.name(d.event, L));
