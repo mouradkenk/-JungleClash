@@ -100,7 +100,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setLayoutDirection(dir());
-        root.setPadding(dp(14), dp(16), dp(14), dp(24));
+        root.setPadding(dp(10), dp(8), dp(10), dp(14));
         scroll.addView(root, new ScrollView.LayoutParams(-1, -2));
         // Keep everything clear of the status bar, notch and navigation bar (edge-to-edge phones).
         scroll.setOnApplyWindowInsetsListener((v, insets) -> {
@@ -204,9 +204,9 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         root.addView(top);
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.drawable.logo);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(150), dp(150));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(120), dp(120));
         lp.gravity = Gravity.CENTER_HORIZONTAL;
-        lp.topMargin = dp(16);
+        lp.topMargin = dp(4);
         root.addView(logo, lp);
         TextView title = text(T("صراع الغابة"), 40, GOLD_LIGHT, true);
         title.setGravity(Gravity.CENTER);
@@ -651,11 +651,11 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             LinearLayout win = new LinearLayout(this);
             win.setOrientation(LinearLayout.VERTICAL);
             win.setGravity(Gravity.CENTER);
-            win.setPadding(dp(16), dp(16), dp(16), dp(16));
+            win.setPadding(dp(12), dp(10), dp(12), dp(10));
             win.setBackground(rounded(HERB_DARK, GOLD, 16));
             ImageView logo = new ImageView(this);
             logo.setImageResource(R.drawable.logo);
-            win.addView(logo, new LinearLayout.LayoutParams(dp(90), dp(90)));
+            win.addView(logo, new LinearLayout.LayoutParams(dp(72), dp(72)));
             TextView w = text(T("ملك الغابة: ") + v.optString("winner"), 26, GOLD_LIGHT, true);
             w.setGravity(Gravity.CENTER);
             win.addView(w);
@@ -819,11 +819,11 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 LinearLayout win = new LinearLayout(this);
                 win.setOrientation(LinearLayout.VERTICAL);
                 win.setGravity(Gravity.CENTER);
-                win.setPadding(dp(16), dp(16), dp(16), dp(16));
+                win.setPadding(dp(12), dp(10), dp(12), dp(10));
                 win.setBackground(rounded(HERB_DARK, GOLD, 16));
                 ImageView logo = new ImageView(this);
                 logo.setImageResource(R.drawable.logo);
-                win.addView(logo, new LinearLayout.LayoutParams(dp(90), dp(90)));
+                win.addView(logo, new LinearLayout.LayoutParams(dp(72), dp(72)));
                 TextView w = text(T("ملك الغابة: ") + v.optString("winner"), 26, GOLD_LIGHT, true);
                 w.setGravity(Gravity.CENTER);
                 win.addView(w);
@@ -903,7 +903,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     private void renderDuelPrompt(JSONObject v, JSONObject prompt) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(14), dp(14), dp(14), dp(14));
+        box.setPadding(dp(10), dp(10), dp(10), dp(10));
         box.setBackground(rounded(PANEL, GOLD, 14));
         box.addView(text(prompt.optString("title"), 18, INK, true));
         JSONArray opts = prompt.optJSONArray("options");
@@ -912,7 +912,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             JSONObject o = opts.optJSONObject(i);
             String id = o.optString("id");
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-            lp.topMargin = dp(8);
+            lp.topMargin = dp(5);
             box.addView(button(o.optString("label"), ATTACK, x -> duelChoose(v, kind, id)), lp);
         }
         root.addView(box);
@@ -938,7 +938,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         boolean pred = a.optBoolean("pred");
         LinearLayout box = row();
         box.setGravity(Gravity.CENTER_VERTICAL);
-        box.setPadding(dp(8), dp(8), dp(8), dp(8));
+        box.setPadding(dp(6), dp(6), dp(6), dp(6));
         box.setBackground(rounded(pred ? PRED_DARK : HERB_DARK, GOLD, 12));
         box.addView(animalPic(a, 64), new LinearLayout.LayoutParams(dp(64), dp(64)));
         LinearLayout mid = new LinearLayout(this);
@@ -975,7 +975,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
                 r.put("out", false);
             } catch (JSONException ignored) { }
             LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, -2);
-            rp.topMargin = dp(8);
+            rp.topMargin = dp(5);
             box.addView(resultRow(r, true), rp);
         }
         return box;
@@ -1073,7 +1073,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     private void renderPrompt(JSONObject prompt) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(14), dp(14), dp(14), dp(14));
+        box.setPadding(dp(10), dp(10), dp(10), dp(10));
         box.setBackground(rounded(PANEL, GOLD, 14));
         TextView t = text(prompt.optString("title"), 18, INK, true);
         box.addView(t);
@@ -1084,7 +1084,11 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             String id = o.optString("id");
             int color = id.equals("attack") ? ATTACK : id.equals("hide") ? HIDE : HERB_DARK;
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-            lp.topMargin = dp(8);
+            lp.topMargin = dp(5);
+            if (id.startsWith("attack:") || id.equals("hide")) {
+                box.addView(decisionButton(id, o.optString("label"), x -> choose(kind, id)), lp);
+                continue;
+            }
             box.addView(button(o.optString("label"), color, x -> choose(kind, id)), lp);
         }
         root.addView(box);
@@ -1141,10 +1145,10 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         boolean pred = a.optBoolean("pred");
         LinearLayout card = row();
         card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setPadding(dp(8), dp(8), dp(8), dp(8));
+        card.setPadding(dp(6), dp(6), dp(6), dp(6));
         card.setBackground(rounded(pred ? PRED_DARK : HERB_DARK, GOLD, 18));
 
-        int size = Math.min(dp(big ? 130 : 90), (int) (screenWidthPx() * (big ? 0.34f : 0.24f)));
+        int size = Math.min(dp(big ? 110 : 80), (int) (screenWidthPx() * (big ? 0.30f : 0.22f)));
         card.addView(animalPic(a, big ? 130 : 90), new LinearLayout.LayoutParams(size, size));
 
         LinearLayout col = new LinearLayout(this);
@@ -1273,7 +1277,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
     private View infoBox(String title, String body) {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(14), dp(12), dp(14), dp(12));
+        c.setPadding(dp(10), dp(8), dp(10), dp(8));
         c.setBackground(rounded(PANEL, GOLD, 14));
         c.addView(text(title, 17, HERB, true));
         c.addView(text(body, 15, INK, false));
@@ -1332,13 +1336,39 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
         b.setText(label);
         b.setAllCaps(false);
         b.setTextColor(Color.WHITE);
-        b.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17 * fontUi);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16 * fontUi);
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setBackground(rounded(color, GOLD, 14));
-        b.setPadding(dp(12), dp(14), dp(12), dp(14));
-        b.setMinHeight(dp(52));
+        b.setPadding(dp(10), dp(9), dp(10), dp(9));
+        b.setMinHeight(dp(46));
         b.setOnClickListener(l);
         b.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
+        return b;
+    }
+
+    /** Attack / hide choice drawn as a picture: claw marks for an attack, the watching bush for hiding. */
+    private View decisionButton(String id, String label, View.OnClickListener l) {
+        boolean attack = id.startsWith("attack:");
+        LinearLayout b = row();
+        b.setGravity(Gravity.CENTER_VERTICAL);
+        b.setPadding(dp(8), dp(4), dp(12), dp(4));
+        b.setBackground(rounded(attack ? Color.parseColor("#9E2E22") : Color.parseColor("#2E5B3A"), GOLD, 16));
+        b.setClickable(true);
+        b.setOnClickListener(l);
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(attack ? R.drawable.ic_attack : R.drawable.ic_hide);
+        icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        b.addView(icon, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        String prefix = T("هجوم على ");
+        String main = attack ? (label.startsWith(prefix) ? label.substring(prefix.length()) : label) : T("اختباء");
+        TextView name = text(main, 18, Color.WHITE, true);
+        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(0, -2, 1f);
+        np.setMarginStart(dp(12));
+        b.addView(name, np);
+        TextView hint = text(attack ? T("هجوم +5 / −3") : T("تجاهل الخصومات"), 13,
+                             attack ? Color.parseColor("#FFD9CF") : Color.parseColor("#CFEBD3"), false);
+        b.addView(hint, new LinearLayout.LayoutParams(-2, -2));
+        b.setContentDescription(label);
         return b;
     }
 
@@ -1358,7 +1388,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
 
     private void space(int h) {
         View v = new View(this);
-        root.addView(v, new LinearLayout.LayoutParams(1, dp(h)));
+        root.addView(v, new LinearLayout.LayoutParams(1, Math.max(1, dp(h) * 11 / 20)));
     }
 
     private GradientDrawable rounded(int fill, int stroke, int radiusDp) {
@@ -1461,7 +1491,7 @@ public class MainActivity extends Activity implements NearbyLink.Listener, HostC
             ab.addView(text(T("هل تعلم؟"), 15, Color.parseColor("#6B4E1E"), true));
             ab.addView(text(Lang.fact(a.key, lang), 14, INK, false));
             LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, -2);
-            ap.topMargin = dp(8);
+            ap.topMargin = dp(5);
             box.addView(ab, ap);
             space(10);
             root.addView(box);

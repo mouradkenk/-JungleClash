@@ -274,6 +274,8 @@ public final class Lang {
         ui("سهل", "Easy");
         ui("صعب", "Hard");
         ui("خصوم الكمبيوتر يلعبون فوراً، وأنت المضيف: تتحكم في بدء الجولات وكشف المبارزات.", "Computer opponents play instantly. You are the host: you start rounds and reveal duels.");
+        ui("هجوم +5 / −3", "Attack +5 / −3");
+        ui("تجاهل الخصومات", "Ignore penalties");
         for (Cards.Animal a : Cards.ANIMALS) AR_NAME_TO_KEY.put(a.name, a.key);
         for (Cards.Env e : Cards.ENVS) AR_NAME_TO_KEY.put(e.name, "env:" + e.key);
     }
